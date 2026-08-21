@@ -46,7 +46,8 @@ Desktop.ini
 *.msi
 *.zip
 *.sha256
-
+/memory-desktop-web/
+/docs/test/
 # 测试运行产生的日志、报告、截图及本机数据副本
 /graph-screenshots/
 /testdata/tmp-*
