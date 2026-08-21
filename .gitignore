@@ -1,0 +1,70 @@
+# Rust 构建产物与本地工具链
+/target/
+/.rust-home/
+/.build-cache/
+/.cache/
+**/*.rs.bk
+
+# 保留仓库级 Cargo 配置，忽略其余本机缓存
+/.cargo/*
+!/.cargo/config.toml
+
+# Node.js 依赖、前端产物与增量编译缓存
+**/node_modules/
+/memory-desktop-web/dist/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Tauri 生成缓存与架构文件
+/src-tauri/.tauri-cache/
+/src-tauri/gen/schemas/
+
+# 编辑器与操作系统文件
+/.idea/
+/.vscode/
+/.trae/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+
+# 本机环境、凭据与个人配置
+.env
+.env.*
+!.env.example
+/docs/codex-config-*.toml
+
+# 本地构建的安装包、可执行文件与发布暂存目录
+/MemStack-MCP-fixed.exe
+/MemStack-Portable-*/
+/SHA256SUMS.txt
+/release/
+*.msi
+*.zip
+*.sha256
+
+# 测试运行产生的日志、报告、截图及本机数据副本
+/graph-screenshots/
+/testdata/tmp-*
+/testdata/db-snapshot/
+/testdata/graph-acceptance/*.png
+/testdata/graph-acceptance/stdout.log
+/testdata/graph-acceptance/stderr.log
+/testdata/*.log
+/testdata/*-result.json
+/testdata/codex-verify-output.txt
+*.db-wal
+*.db-shm
+*.db-journal
+
+# 临时文件
+*.tmp
+*.temp
+*.bak
+*.bak.*
+*.old
+*~

@@ -1,0 +1,29 @@
+{
+  "note": "DPAPI \u5BC6\u6587\u4EC5\u5728\u540C\u4E00 Windows \u7528\u6237\u4E0E\u673A\u5668\u4E0A\u53EF\u89E3\u5BC6\uFF1B\u6362\u673A\u9700\u91CD\u65B0\u751F\u6210\u3002",
+  "generatedAt": "2026-08-14T23:41:53.1892575+08:00",
+  "machine": "CHEN-212",
+  "user": "z",
+  "entropy": "MemStack.Desktop.0.4.0",
+  "cases": [
+    {
+      "name": "ascii",
+      "plaintext": "sample-secret-token-123",
+      "ciphertext": "AQAAANCMnd8BFdERjHoAwE/Cl\u002BsBAAAAh8PadmsV2UGZZ5/gDohUrQAAAAACAAAAAAAQZgAAAAEAACAAAADr2lnPcwrFTJevIP5eVQWGwN6zQDKSilgXT5DCuwwi1QAAAAAOgAAAAAIAACAAAAACof\u002Bbh7719RjuUtXJMOYP4zPOlJp4k46t8jE/KQrgOSAAAADjemDJThnHucyRnJRCxpins0bxPsqmEsHcFPB89BHk1kAAAAA75WPW/7edeCmDtBknw/TIpdlcEibCoAF43BGffcijYhMB8u98B9LNHRD7h3qvcIkmPyGJt8\u002B1donxPDxFfTRp"
+    },
+    {
+      "name": "chinese",
+      "plaintext": "\u4E2D\u6587\u5BC6\u94A5\u6837\u672C\uFF1A\u5FC6\u6808\u8FC1\u79FB",
+      "ciphertext": "AQAAANCMnd8BFdERjHoAwE/Cl\u002BsBAAAAh8PadmsV2UGZZ5/gDohUrQAAAAACAAAAAAAQZgAAAAEAACAAAAAZIXpg/HoeOlvX6Zx4n58FfYEBDh2MYM9rEJyV8nYUBwAAAAAOgAAAAAIAACAAAABRUdIJNk7ne39jsvAOzef5RDDZqoAdjuJ54vQtYerjhDAAAAAQl7QTyRBFkDqX/xPxOwNUGMCGd64QkEwoxDGnaobw\u002Bd8I60VQ0rrwegtcPX95QORAAAAAmMNGLFdzD/P4Z3vdD81SN3E7aPHdBkxEl0Zb6RF0z1O8AD1VK7iEcvonPDm1Grx\u002BAr9/IN7ZnY8nwHwSq8oBaA=="
+    },
+    {
+      "name": "special",
+      "plaintext": "p@$$w0rd!#%\u0026*",
+      "ciphertext": "AQAAANCMnd8BFdERjHoAwE/Cl\u002BsBAAAAh8PadmsV2UGZZ5/gDohUrQAAAAACAAAAAAAQZgAAAAEAACAAAACcfd\u002BT6LvFuvrv2AB6NCsm9q25HPzLXlAkuieAHAJOYwAAAAAOgAAAAAIAACAAAABCPfepCvy3lQUI7NVVPEfJhXUPKEQTXrQNFUrJ8mkJ\u002BRAAAABT/DpvT73dmoXRwtqJFTrYQAAAALn96u2IkwNtfxdrZKbLMZuqlEGJKWXgB1zOmYkwbJxNEQNnZlhIqoUotYPcSixbsywj\u002B6vUtPVYUJsoLdtJBS4="
+    },
+    {
+      "name": "empty",
+      "plaintext": "",
+      "ciphertext": "AQAAANCMnd8BFdERjHoAwE/Cl\u002BsBAAAAh8PadmsV2UGZZ5/gDohUrQAAAAACAAAAAAAQZgAAAAEAACAAAABZvG711dS08n5s8swtTcsyldwW/QHUJHMMjPYtSmxikwAAAAAOgAAAAAIAACAAAABKiQEZ4Gkz1Aybm1vp73vnriiNcp4Rr96UbIozwHa6UhAAAAAn6wbrBwtOs7DzxopRvagPQAAAAPn4cj0U1Djfn2\u002Boe88Z/de\u002B4ZC28/vZUdrojmq2z0soVjEGzao3Q4QozcKXf4TUlQVKR8qpHynqTT0Lsly94JA="
+    }
+  ]
+}

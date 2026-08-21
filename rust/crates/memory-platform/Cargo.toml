@@ -1,0 +1,18 @@
+[package]
+name = "memory-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+memory-domain = { workspace = true }
+base64 = { workspace = true }
+thiserror = { workspace = true }
+windows = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tempfile = "3"

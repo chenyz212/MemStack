@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "rust/crates/memory-domain",
+    "rust/crates/memory-application",
+    "rust/crates/memory-storage",
+    "rust/crates/memory-platform",
+    "rust/crates/memory-mcp",
+    "rust/apps/memstack-mcp-stdio",
+]
+
+[workspace.package]
+version = "0.4.0"
+edition = "2024"
+license = "Proprietary"
+authors = ["MemStack"]
+
+[workspace.dependencies]
+memory-domain = { path = "rust/crates/memory-domain" }
+memory-application = { path = "rust/crates/memory-application" }
+memory-storage = { path = "rust/crates/memory-storage" }
+memory-platform = { path = "rust/crates/memory-platform" }
+memory-mcp = { path = "rust/crates/memory-mcp" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
+base64 = "0.22"
+sha2 = "0.10"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_System_Memory",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }
+uuid = { version = "1", features = ["v4"] }
+ureq = { version = "2", features = ["json", "native-certs"] }
+rmcp = { version = "0.8", features = ["transport-io"] }
+tokio = { version = "1", features = ["io-util", "rt", "macros", "time"] }
+unicode-normalization = "0.1"
+
+[profile.release]
+lto = false
+codegen-units = 16
+strip = "symbols"

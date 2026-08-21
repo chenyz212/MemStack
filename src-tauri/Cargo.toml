@@ -1,0 +1,27 @@
+[package]
+name = "memstack-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "MemStack 桌面客户端（Tauri）"
+default-run = "memstack-desktop"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+memory-domain = { workspace = true }
+memory-storage = { workspace = true }
+memory-platform = { workspace = true }
+memory-application = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+windows = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+tempfile = "3"

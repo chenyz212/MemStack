@@ -1,0 +1,6 @@
+{
+  "database": "db-samples/full-sample.db",
+  "plainToken": "uam_b1b61a97b5a14e2f9c1d0e3a7f6c5b4a99887766554433221100ffeeddccbbaa",
+  "displayName": "Codex \u6837\u672C",
+  "permission": "ReadWrite"
+}

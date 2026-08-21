@@ -1,0 +1,23 @@
+[package]
+name = "memstack-mcp-stdio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "MemStack-MCP"
+path = "src/main.rs"
+
+[dependencies]
+memory-domain = { workspace = true }
+memory-storage = { workspace = true }
+memory-platform = { workspace = true }
+memory-application = { workspace = true }
+memory-mcp = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+chrono = { workspace = true }
+rusqlite = { workspace = true }
+unicode-normalization = { workspace = true }

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "ascii",
+    "content": "The quick brown fox jumps over the lazy dog",
+    "checksum": "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592"
+  },
+  {
+    "name": "chinese",
+    "content": "统一 AI 记忆：跨语言契约测试样本",
+    "checksum": "cf60458284242e259b49a491e12b02f582f4634d6e5dc5f4dd1ab4e48574ec05"
+  },
+  {
+    "name": "nfkc-fullwidth",
+    "content": "ＡＢＣ１２３",
+    "checksum": "e0bebd22819993425814866b62701e2919ea26f1370499c1037b53b9d49c2c8a"
+  },
+  {
+    "name": "nfkc-combined",
+    "content": "é",
+    "checksum": "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c"
+  },
+  {
+    "name": "whitespace-trim",
+    "content": "   记忆正文两侧有空白   ",
+    "checksum": "810c60954022b02cba31cf4513774bb6458f127f7564cf322c3402a71cbb99f2"
+  },
+  {
+    "name": "special",
+    "content": "标点!@#$%^\u0026*()_\u002B-=[]{}|;\u0027:\u0022,./\u003C\u003E?\u0060~ 与 emoji \uD83D\uDE80",
+    "checksum": "1fd62ad7c35ecec1cd89c4727a63c5d7ed525b791fc0c108ddd43fbe430ca279"
+  }
+]
