@@ -18,6 +18,19 @@ fn hash_token(plain_token: &str) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// 校验 Token 过期时间；时间格式损坏时按无效 Token 拒绝，避免绕过过期限制。
+fn validate_expiration(expires_at: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> Result<(), String> {
+    let Some(expires_at_text) = expires_at else {
+        return Ok(());
+    };
+    let expires_at = chrono::DateTime::parse_from_rfc3339(expires_at_text.trim())
+        .map_err(|_| "MEMSTACK_TOKEN 无效或已过期".to_string())?;
+    if expires_at <= now {
+        return Err("MEMSTACK_TOKEN 无效或已过期".to_string());
+    }
+    Ok(())
+}
+
 /// 校验明文 Token 并加载身份；无效、吊销或过期时返回 Err（消息不含敏感信息）。
 pub fn authenticate(connection: &Connection, plain_token: &str) -> Result<McpCallerContext, String> {
     if plain_token.trim().is_empty() {
@@ -41,14 +54,7 @@ pub fn authenticate(connection: &Connection, plain_token: &str) -> Result<McpCal
         )
         .map_err(|_| "MEMSTACK_TOKEN 无效或已过期".to_string())?;
     let (token_id, display_name, permission_text, project_id, expires_at) = row;
-    if let Some(expires_at_text) = expires_at
-        && let Ok(expires_at) =
-            chrono::DateTime::parse_from_rfc3339(expires_at_text.trim_end_matches('Z').to_string().as_str())
-                .or_else(|_| chrono::DateTime::parse_from_rfc3339(format!("{expires_at_text}Z").as_str()))
-        && expires_at.timestamp() < chrono::Utc::now().timestamp()
-    {
-        return Err("MEMSTACK_TOKEN 无效或已过期".to_string());
-    }
+    validate_expiration(expires_at.as_deref(), chrono::Utc::now())?;
     // permission 列为 "Read"/"ReadWrite"（flexible_enum 字符串形式）。
     let permission = serde_json::from_value::<McpPermission>(serde_json::Value::String(permission_text))
         .map_err(|_| "MEMSTACK_TOKEN 无效或已过期".to_string())?;
@@ -103,6 +109,22 @@ mod tests {
                 [&expired_hash],
             )
             .unwrap();
+        let expired_z_hash = hash_token("uam_expired_z_token");
+        connection
+            .execute(
+                "INSERT INTO mcp_token(id,token_hash,permission,expires_at) \
+                 VALUES('4',?1,'Read','2020-01-01T00:00:00Z');",
+                [&expired_z_hash],
+            )
+            .unwrap();
+        let malformed_expiration_hash = hash_token("uam_malformed_expiration_token");
+        connection
+            .execute(
+                "INSERT INTO mcp_token(id,token_hash,permission,expires_at) \
+                 VALUES('5',?1,'Read','not-a-time');",
+                [&malformed_expiration_hash],
+            )
+            .unwrap();
         connection
     }
 
@@ -130,6 +152,18 @@ mod tests {
     fn expired_token_is_rejected() {
         let connection = setup_database();
         assert!(authenticate(&connection, "uam_expired_token").is_err());
+    }
+
+    #[test]
+    fn expired_z_token_is_rejected() {
+        let connection = setup_database();
+        assert!(authenticate(&connection, "uam_expired_z_token").is_err());
+    }
+
+    #[test]
+    fn malformed_expiration_is_rejected() {
+        let connection = setup_database();
+        assert!(authenticate(&connection, "uam_malformed_expiration_token").is_err());
     }
 
     #[test]
