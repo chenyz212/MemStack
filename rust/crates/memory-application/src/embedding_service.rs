@@ -487,8 +487,7 @@ fn create_cache_key(request: &SaveEmbeddingSettingsRequest, input: &str) -> Stri
 fn normalize(mut vector: Vec<f32>) -> Vec<f32> {
     // 8 通道分块累加，对齐 C# `Vector<float>`（AVX2 下 Count=8）的求和方式。
     let mut lanes = [0.0f32; 8];
-    let chunks = vector.chunks_exact(8);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = vector.as_chunks::<8>();
     for chunk in chunks {
         for (lane, value) in lanes.iter_mut().zip(chunk) {
             *lane += value * value;

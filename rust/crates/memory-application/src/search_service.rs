@@ -337,8 +337,10 @@ fn load_semantic_candidates(
             continue;
         }
         let vector: Vec<f32> = blob
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
             .collect();
         if vector.len() == query_vector.len() {
             candidates.push((memory, dot_product(query_vector, &vector)));
@@ -605,9 +607,8 @@ fn create_pairs(value: &str) -> HashSet<String> {
 /// 点积：8 通道分块累加（对齐 C# `Vector<float>` AVX2 求和方式）。
 fn dot_product(left: &[f32], right: &[f32]) -> f32 {
     let mut lanes = [0.0f32; 8];
-    let chunks = left.chunks_exact(8);
-    let remainder = chunks.remainder();
-    for (chunk_index, chunk) in chunks.enumerate() {
+    let (chunks, remainder) = left.as_chunks::<8>();
+    for (chunk_index, chunk) in chunks.iter().enumerate() {
         for (lane_index, value) in chunk.iter().enumerate() {
             lanes[lane_index] += value * right[chunk_index * 8 + lane_index];
         }
