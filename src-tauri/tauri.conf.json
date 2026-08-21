@@ -4,7 +4,7 @@
   "version": "0.4.0",
   "identifier": "com.memstack.desktop",
   "build": {
-    "frontendDist": "../memory-desktop-web/dist"
+    "frontendDist": "../memory-web/dist"
   },
   "app": {
     "windows": [],

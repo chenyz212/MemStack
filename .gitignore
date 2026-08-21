@@ -11,7 +11,7 @@
 
 # Node.js 依赖、前端产物与增量编译缓存
 **/node_modules/
-/memory-desktop-web/dist/
+/memory-web/dist/
 *.tsbuildinfo
 npm-debug.log*
 yarn-debug.log*
@@ -46,7 +46,6 @@ Desktop.ini
 *.msi
 *.zip
 *.sha256
-/memory-desktop-web/
 /docs/test/
 # 测试运行产生的日志、报告、截图及本机数据副本
 /graph-screenshots/

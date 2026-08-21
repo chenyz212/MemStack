@@ -39,7 +39,7 @@ function Invoke-Step {
 # ---- 1. 前端构建 ----
 if (-not $SkipFrontend) {
     Invoke-Step "前端构建 (vue-tsc + vite)" {
-        Push-Location (Join-Path $root "memory-desktop-web")
+        Push-Location (Join-Path $root "memory-web")
         npm run build
         Pop-Location
     }

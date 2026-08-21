@@ -22,7 +22,7 @@
   - `crates/memory-platform`：Windows 平台设施（DPAPI、路径、日志轮换、命名互斥）。
   - `crates/memory-mcp`：MCP 工具契约（清单权威 `contracts/mcp-tools-list.json`）与分发。
   - `apps/memstack-mcp-stdio`：`MemStack-MCP.exe`——无窗口 MCP stdio 服务器，供 AI 客户端接入。
-- `memory-desktop-web`：Vue 3 前端（总览、记忆、图谱、连接 AI、设置）。
+- `memory-web`：Vue 3 前端（总览、记忆、图谱、连接 AI、设置）。
 
 客户端不实现登录，也不迁移旧 PostgreSQL 数据。个人与项目记忆默认保存在当前 Windows 用户的 `%LOCALAPPDATA%\MemStack\data\memory.db`；如果检测到同名旧 Java 数据库，会完整保留旧文件并自动使用 `desktop-memory.db`。
 
@@ -31,17 +31,17 @@
 构建机需要 Node.js、Rust 工具链、`rustfmt` 与 `clippy`：
 
 ```powershell
-Set-Location memory-desktop-web
+Set-Location memory-web
 npm ci
 npm run build
 
 Set-Location ..
-memory-desktop-web\node_modules\.bin\tauri.cmd build
+memory-web\node_modules\.bin\tauri.cmd build
 ```
 
 产物：`target\release\memstack-desktop.exe`（主程序）、`target\release\MemStack-MCP.exe`（MCP stdio 服务器）、`target\release\bundle\nsis\MemStack_0.4.0_x64-setup.exe`（NSIS 安装包）。
 
-开发调试：`npm run dev`（memory-desktop-web）+ `cargo run`（src-tauri），或直接 `tauri.cmd dev`。
+开发调试：`npm run dev`（memory-web）+ `cargo run`（src-tauri），或直接 `tauri.cmd dev`。
 
 ## MCP 与工作空间记忆
 

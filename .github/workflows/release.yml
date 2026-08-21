@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: memory-desktop-web/package-lock.json
+          cache-dependency-path: memory-web/package-lock.json
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
@@ -30,7 +30,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: 安装前端依赖
-        working-directory: memory-desktop-web
+        working-directory: memory-web
         run: npm ci
 
       - name: 检查 Rust 格式
@@ -44,18 +44,18 @@ jobs:
         run: cargo test --workspace -- --skip decrypts_csharp_dpapi_golden_data
 
       - name: 运行前端测试
-        working-directory: memory-desktop-web
+        working-directory: memory-web
         run: npm test
 
       - name: 构建前端
-        working-directory: memory-desktop-web
+        working-directory: memory-web
         run: npm run build
 
       - name: 构建 MCP 程序
         run: cargo build --release -p memstack-mcp-stdio
 
       - name: 构建 Windows 安装包
-        run: .\memory-desktop-web\node_modules\.bin\tauri.cmd build
+        run: .\memory-web\node_modules\.bin\tauri.cmd build
 
       - name: 整理绿色版
         shell: powershell
