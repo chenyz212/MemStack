@@ -60,6 +60,7 @@ Desktop.ini
 *.db-wal
 *.db-shm
 *.db-journal
+.memstack/
 
 # 临时文件
 *.tmp

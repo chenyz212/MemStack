@@ -3,9 +3,11 @@
 //! Tauri Command 与 MCP 工具只能调用该层，不得直接拼接 SQL。
 //! 基础设施（db/clock/ids/tokenizer/sqlite_errors）供各服务共享。
 
+pub mod ai_prompt;
 pub mod candidate_service;
 pub mod client_registration;
 pub mod clock;
+pub mod conclusion_card_service;
 pub mod db;
 pub mod embedding_service;
 pub mod embedding_worker;
@@ -15,6 +17,9 @@ pub mod mcp_access;
 pub mod mcp_connection_test;
 pub mod memory_service;
 pub mod overview_service;
+pub mod project_document_fs;
+pub mod project_document_service;
+pub mod project_document_watcher;
 pub mod project_service;
 pub mod search_service;
 pub mod sqlite_errors;

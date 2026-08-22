@@ -4,6 +4,7 @@ import {
   apiFetch,
   ApiRequestError,
   type CursorPage,
+  type ConclusionCardPayload,
   type DeletedProjectStats,
   type EmbeddingSettings,
   type GraphResult,
@@ -33,10 +34,14 @@ import {
 import { renderMemoryMarkdown } from "./markdown";
 import GraphPage from "./graph/GraphPage.vue";
 import { renderGraphPreview } from "./graph/preview";
+import ProjectDocumentsPage from "./project-documents/ProjectDocumentsPage.vue";
+import ConclusionCardFields from "./project-documents/ConclusionCardFields.vue";
+import PromptDialog from "./ai-prompt/PromptDialog.vue";
 
 type NavigationKey =
   | "overview"
   | "memories"
+  | "documents"
   | "graph"
   | "connections"
   | "settings";
@@ -84,6 +89,7 @@ const GRAPH_FEATURE_ENABLED = false;
 const navigationItems: NavigationItem[] = [
   { key: "overview", label: "总览", icon: "⌂" },
   { key: "memories", label: "记忆", icon: "✦" },
+  { key: "documents", label: "项目文档", icon: "❑" },
   { key: "graph", label: "图谱", icon: "◌" },
   { key: "connections", label: "连接 AI", icon: "⌁" },
   { key: "settings", label: "设置", icon: "⚙" },
@@ -140,6 +146,10 @@ const candidates = ref<MemoryCandidateItem[]>([]);
 const candidateScopeFilter = ref("");
 const candidateSourceFilter = ref("");
 const editingCandidateId = ref<string | null>(null);
+/** 当前候选是否携带结论卡片结构化载荷。 */
+const editingConclusionCandidate = ref(false);
+/** 打开候选编辑器时的结构化载荷探测状态。 */
+const isLoadingCandidateStructure = ref(false);
 const memoryFacets = ref<MemoryFacets>({
   allCount: 0,
   personalCount: 0,
@@ -153,6 +163,8 @@ const nextCursor = ref<string | null>(null);
 const quickCapture = ref("");
 const searchQuery = ref("");
 const searchResults = ref<SearchResult[]>([]);
+/** 搜索已排队或请求进行中：空列表时显示"正在搜索"而非"未找到"。 */
+const isSearching = ref(false);
 const selectedMemory = ref<MemoryItem | null>(null);
 const selectedProjectId = ref("");
 const memoryView = ref<MemoryViewKey>("ALL");
@@ -256,6 +268,12 @@ const isMcpClientSaving = ref(false);
 const mcpPathHealth = ref<Record<string, PathHealthReport>>({});
 /** 路径健康刷新进行中标志 */
 const isMcpPathHealthLoading = ref(false);
+/** 全局提示词查看弹窗可见标志 */
+const promptDialogVisible = ref(false);
+/** 弹窗对应的客户端类型（适配器输入：Codex/Claude/Cursor/Generic） */
+const promptDialogClientType = ref("");
+/** 弹窗对应的客户端显示名 */
+const promptDialogClientName = ref("");
 let searchTimer: number | null = null;
 let searchController: AbortController | null = null;
 
@@ -291,6 +309,40 @@ const memoryViewDescription = computed(() => {
     return "AI 提交但尚未进入正式检索的候选记忆";
   if (memoryView.value === "PROJECT") return "仅显示当前中文项目中的记忆";
   return "个人记忆与项目记忆的统一视图";
+});
+/** 搜索态下的空列表文案：区分"正在搜索 / 未找到"，避免误引导创建记忆。 */
+const isSearchActive = computed(() => searchQuery.value.trim().length > 0);
+/** 当前列表是否展示后端搜索结果（搜索激活且非归档视图，归档走本地过滤）。 */
+const isSearchResultView = computed(
+  () => isSearchActive.value && memoryView.value !== "ARCHIVED",
+);
+/** 搜索结果语义相似度映射（memoryId → 余弦值），供卡片匹配度展示。 */
+const searchSimilarityById = computed(() => {
+  const map = new Map<string, number>();
+  for (const result of searchResults.value) {
+    if (result.semanticSimilarity != null)
+      map.set(result.memory.id, result.semanticSimilarity);
+  }
+  return map;
+});
+
+/** 搜索结果卡片的匹配度文案：语义相似度百分比，纯关键词命中显示"关键词"。 */
+function matchLabel(memoryId: string): string {
+  const similarity = searchSimilarityById.value.get(memoryId);
+  if (similarity === undefined) return "关键词";
+  return `匹配 ${Math.round(similarity * 100)}%`;
+}
+const memoryEmptyTitle = computed(() => {
+  if (isSearchActive.value && isSearching.value) return "正在搜索…";
+  if (isSearchActive.value) return "未找到相关记忆";
+  if (memoryView.value === "ARCHIVED") return "没有已归档记忆";
+  return `${memoryViewTitle.value}还是空的`;
+});
+const memoryEmptyHint = computed(() => {
+  if (isSearchActive.value && isSearching.value) return "正在检索本地与语义索引。";
+  if (isSearchActive.value)
+    return "换个关键词试试，或切换到「全部记忆」扩大搜索范围。";
+  return "创建一条清晰、可复用的长期记忆。";
 });
 const filteredMemories = computed(() => {
   const query = searchQuery.value.trim().toLocaleLowerCase();
@@ -436,6 +488,13 @@ async function loadMcpConnection(): Promise<void> {
   } catch (error) {
     errorMessage.value = readError(error);
   }
+}
+
+/** 打开指定客户端的全局提示词查看弹窗（§21.5：查看/复制/差异/安装）。 */
+function openPromptDialog(client: McpClientCard): void {
+  promptDialogClientType.value = client.displayName;
+  promptDialogClientName.value = getDisplayTitle(client.displayName);
+  promptDialogVisible.value = true;
 }
 
 /** 刷新客户端配置路径健康：同一客户端类型只查询一次，结果按会话 ID 关联卡片。 */
@@ -839,13 +898,27 @@ function formatRelativeTime(iso: string): string {
   return `${Math.floor(seconds / 86400)} 天前`;
 }
 
-/** MCP 活动文案：如「Codex 刚刚读取了项目与个人记忆」。 */
+/** 将 MCP 活动类型转换为总览中的中文动作。 */
+function mcpActivityActionText(action: "READ" | "CREATE" | "UPDATE" | "ARCHIVE"): string {
+  switch (action) {
+    case "CREATE":
+      return "创建了";
+    case "UPDATE":
+      return "更新了";
+    case "ARCHIVE":
+      return "归档了";
+    case "READ":
+      return "读取了";
+  }
+}
+
+/** MCP 活动文案：如「Codex 刚刚更新了项目记忆」。 */
 const overviewActivityText = computed(() => {
   const activity = overview.value?.mcpActivity;
   if (!activity) {
     return "保存个人偏好、项目决策和长期经验，通过中文与语义混合检索快速找回。";
   }
-  const action = activity.action === "CREATE" ? "创建了" : "读取了";
+  const action = mcpActivityActionText(activity.action);
   const scope =
     activity.scope === "Mixed"
       ? "项目与个人记忆"
@@ -1010,6 +1083,7 @@ async function saveQuickCapture(): Promise<void> {
 /** 延迟执行搜索并取消旧请求。 */
 function scheduleSearch(): void {
   if (searchTimer !== null) window.clearTimeout(searchTimer);
+  isSearching.value = true;
   searchTimer = window.setTimeout(runSearch, 250);
 }
 
@@ -1019,6 +1093,7 @@ async function runSearch(): Promise<void> {
   searchController?.abort();
   if (!query) {
     searchResults.value = [];
+    isSearching.value = false;
     return;
   }
   const controller = new AbortController();
@@ -1047,6 +1122,9 @@ async function runSearch(): Promise<void> {
     if (searchController === controller) searchResults.value = results;
   } catch (error) {
     if (!controller.signal.aborted) errorMessage.value = readError(error);
+  } finally {
+    // 仅当前请求可结束搜索态；被新请求取代的旧请求不覆盖状态。
+    if (searchController === controller) isSearching.value = false;
   }
 }
 
@@ -1064,6 +1142,8 @@ function selectMemoryView(view: MemoryViewKey, projectId: string): void {
   memoryView.value = view;
   selectedProjectId.value = projectId;
   searchResults.value = [];
+  // 搜索中切换分类：范围随分类变化，必须重新执行搜索，否则结果被清空后不再恢复。
+  if (searchQuery.value.trim()) scheduleSearch();
 }
 
 /** 加载全部待确认候选。 */
@@ -1079,9 +1159,11 @@ async function loadCandidates(): Promise<void> {
   }
 }
 
-/** 把候选装入可编辑的完整业务表单。 */
-function openCandidateEditor(candidate: MemoryCandidateItem): void {
+/** 识别候选类型并打开对应的单一职责编辑器。 */
+async function openCandidateEditor(candidate: MemoryCandidateItem): Promise<void> {
   editingCandidateId.value = candidate.id;
+  editingConclusionCandidate.value = false;
+  isLoadingCandidateStructure.value = true;
   memoryForm.value = {
     id: candidate.id,
     scope: candidate.scope,
@@ -1097,6 +1179,27 @@ function openCandidateEditor(candidate: MemoryCandidateItem): void {
     expectedVersion: candidate.version,
   };
   showMemoryEditor.value = true;
+  try {
+    const payload = await apiFetch<ConclusionCardPayload | null>(
+      `/api/memory-candidates/${candidate.id}/conclusion-payload`,
+      { method: "GET" },
+      null,
+    );
+    editingConclusionCandidate.value = payload !== null;
+  } catch (error) {
+    errorMessage.value = readError(error);
+    closeMemoryEditor();
+  } finally {
+    isLoadingCandidateStructure.value = false;
+  }
+}
+
+/** 用结构化编辑结果刷新候选版本，保证后续保存继续使用最新乐观锁。 */
+function handleConclusionCandidateUpdated(candidate: MemoryCandidateItem): void {
+  candidates.value = candidates.value.map((item) =>
+    item.id === candidate.id ? candidate : item,
+  );
+  memoryForm.value.expectedVersion = candidate.version;
 }
 
 /** 使用乐观锁确认候选并刷新全部相关页面。 */
@@ -1199,6 +1302,8 @@ function openMemoryEditor(memory: MemoryItem): void {
 function closeMemoryEditor(): void {
   showMemoryEditor.value = false;
   editingCandidateId.value = null;
+  editingConclusionCandidate.value = false;
+  isLoadingCandidateStructure.value = false;
 }
 
 /** 保存新建或修改的记忆。 */
@@ -1635,7 +1740,11 @@ async function loadEmbeddingSettings(): Promise<void> {
 
 /** 测试并保存 Embedding 配置。 */
 async function saveEmbeddingSettings(): Promise<void> {
-  if (!embeddingApiKey.value.trim()) {
+  // 编辑态用 embeddingApiKey，雾化展示态用已保存的 embedding.apiKey
+  const actualApiKey = isEmbeddingKeyEditing.value
+    ? embeddingApiKey.value
+    : embedding.value.apiKey;
+  if (!actualApiKey.trim()) {
     errorMessage.value = "请填写 API Key";
     return;
   }
@@ -1644,7 +1753,7 @@ async function saveEmbeddingSettings(): Promise<void> {
     const body = JSON.stringify({
       baseUrl: embedding.value.baseUrl,
       model: embedding.value.model,
-      apiKey: embeddingApiKey.value,
+      apiKey: actualApiKey,
       dimensions: embedding.value.dimensions,
       enabled: embedding.value.enabled,
     });
@@ -2575,8 +2684,14 @@ async function autoRefresh(): Promise<void> {
                   >
                     <div class="memory-meta">
                       <span>{{ memory.projectName ?? "个人" }}</span>
+                      <!-- 搜索结果视图：右侧显示匹配度（与收藏/置顶位置冲突，搜索时不显示标记） -->
+                      <div v-if="isSearchResultView" class="memory-card-markers">
+                        <span class="match-score" title="语义匹配度">{{
+                          matchLabel(memory.id)
+                        }}</span>
+                      </div>
                       <div
-                        v-if="memory.isFavorite || memory.isPinned"
+                        v-else-if="memory.isFavorite || memory.isPinned"
                         class="memory-card-markers"
                       >
                         <span
@@ -2623,16 +2738,10 @@ async function autoRefresh(): Promise<void> {
               </div>
               <div v-else class="empty-page">
                 <span>✦</span>
-                <h2>
-                  {{
-                    memoryView === "ARCHIVED"
-                      ? "没有已归档记忆"
-                      : `${memoryViewTitle}还是空的`
-                  }}
-                </h2>
-                <p>创建一条清晰、可复用的长期记忆。</p>
+                <h2>{{ memoryEmptyTitle }}</h2>
+                <p>{{ memoryEmptyHint }}</p>
                 <button
-                  v-if="memoryView !== 'ARCHIVED'"
+                  v-if="memoryView !== 'ARCHIVED' && !isSearchActive"
                   class="primary-button"
                   type="button"
                   @click="openNewMemory"
@@ -2644,6 +2753,11 @@ async function autoRefresh(): Promise<void> {
           </template>
         </div>
       </section>
+
+      <ProjectDocumentsPage
+        v-else-if="activeNavigation === 'documents'"
+        :projects="projects"
+      />
 
       <section
         v-else-if="activeNavigation === 'connections'"
@@ -2752,6 +2866,9 @@ async function autoRefresh(): Promise<void> {
               >
                 查看配置
               </button>
+              <button type="button" @click="openPromptDialog(client)">
+                查看提示词
+              </button>
             </footer>
           </article>
           <article
@@ -2859,7 +2976,7 @@ async function autoRefresh(): Promise<void> {
       <section v-else class="placeholder-page page-enter">
         <span>⌁</span>
         <h2>{{ pageTitle }}</h2>
-        <p>MCP HTTP、stdio 与 Token 接入将在第三轮实现。</p>
+        <p>当前页面不可用，请返回总览后重试。</p>
         <button type="button" @click="selectNavigation('overview')">
           返回总览
         </button>
@@ -3176,7 +3293,7 @@ async function autoRefresh(): Promise<void> {
       class="modal-backdrop"
       @click.self="closeMemoryEditor"
     >
-      <form class="modal-card memory-editor" @submit.prevent="saveMemory">
+      <section class="modal-card memory-editor">
         <div class="modal-heading">
           <div>
             <small>MEMORY EDITOR</small>
@@ -3184,6 +3301,16 @@ async function autoRefresh(): Promise<void> {
           </div>
           <button type="button" @click="closeMemoryEditor">×</button>
         </div>
+        <div v-if="isLoadingCandidateStructure" class="loading-state">
+          正在识别候选类型…
+        </div>
+        <ConclusionCardFields
+          v-else-if="editingConclusionCandidate && editingCandidateId"
+          :candidate-id="editingCandidateId"
+          :expected-version="memoryForm.expectedVersion ?? 0"
+          @updated="handleConclusionCandidateUpdated"
+        />
+        <form v-else class="memory-editor-form" @submit.prevent="saveMemory">
         <div class="form-row">
           <label
             >范围<select v-model="memoryForm.scope">
@@ -3262,7 +3389,8 @@ async function autoRefresh(): Promise<void> {
             {{ isSaving ? "保存中…" : "保存记忆" }}
           </button>
         </div>
-      </form>
+        </form>
+      </section>
     </div>
     <div
       v-if="showProjectEditor"
@@ -3577,6 +3705,12 @@ async function autoRefresh(): Promise<void> {
         </section>
       </section>
     </div>
+    <PromptDialog
+      :visible="promptDialogVisible"
+      :client-type="promptDialogClientType"
+      :client-display-name="promptDialogClientName"
+      @close="promptDialogVisible = false"
+    />
     <Transition name="toast"
       ><div v-if="toastMessage" class="toast-message">
         ✓ {{ toastMessage }}

@@ -1,4 +1,4 @@
-//! MemStack-MCP：无窗口的 MCP stdio 服务（阶段 5 全量 16 工具）。
+//! MemStack-MCP：无窗口的 MCP stdio 服务。
 //!
 //! 进程规则（对应迁移文档 §8.1）：
 //! - 不创建窗口、托盘和 HTTP 监听。
@@ -8,7 +8,9 @@
 //!
 //! 工具分发与权限守卫由 `memory-mcp` 契约层承载（契约权威：contracts/mcp-tools-list.json）；
 //! 错误响应形态（沿自 C# 时代实测快照，现为稳定行为契约）：
-//! - 业务/参数错误 → result.isError=true + 固定英文摘要（不含错误码，会话存活）。
+//! - 业务/参数错误 → result.isError=true + content 文本「[错误码] 中文消息
+//!   （调用工具：xxx）」，不携带 structuredContent（错误形态不符合 outputSchema，
+//!   MCP 客户端校验会吞掉真实原因），会话存活。
 //! - 未知工具 → JSON-RPC -32602；未知方法 → -32601。
 //!
 //! 身份双轨（T8）：主路径 `MemStack-MCP --session-id <guid>`（密文 Token + DPAPI 解密
@@ -33,13 +35,17 @@ use memory_domain::McpCallerContext;
 use memory_mcp::dispatch::Services;
 use serde_json::{Value, json};
 
-/// 协议版本与服务器信息（与 C# 0.4.0 initialize 响应一致）。
+/// 协议版本与当前桌面端服务器信息。
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const SERVER_NAME: &str = "memstack";
 const SERVER_TITLE: &str = "MemStack";
-const SERVER_VERSION: &str = "0.4.0";
-/// stdin 空闲超时：连续 5 分钟未收到任何消息时主动退出，防止 AI 客户端异常退出后遗留僵尸进程。
-const STDIN_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+const SERVER_VERSION: &str = "0.4.1";
+/// stdin 空闲超时默认值（秒）：30 分钟。
+/// 防客户端异常退出/遗弃连接后的僵尸进程；阈值宁晚勿早——误杀一次活跃会话
+/// = 客户端 MCP 整体报废需重启，晚杀 = 一个轻量进程多存活一会儿。
+/// 三层回收：① 客户端死亡 → OS 关闭管道 → stdin EOF 立即退出（秒级）；
+/// ② 客户端发 ping 心跳 → 计时器重置，永不误杀；③ 长期空闲 → 超时兜底回收。
+const DEFAULT_STDIN_IDLE_TIMEOUT_SECS: u64 = 1800;
 
 const SERVER_INSTRUCTIONS: &str = concat!(
     "记忆保存执行规范（严格遵守）：",
@@ -72,12 +78,15 @@ fn run() -> Result<(), String> {
     // 0.4.0 起 UnifiedAiMemory → MemStack；旧目录存在则整体重命名迁移。
     memory_platform::migrate_legacy_dir_if_needed().map_err(|error| format!("{error}（请退出旧版本后重启）"))?;
     // §16 启动时日志轮换：失败静默（诊断辅助不阻断启动）。
-    memory_platform::log_rotation::rotate_logs();
+    // 测试子进程不动生产日志，也不触发轮换。
+    if !test_db_scenario() {
+        memory_platform::log_rotation::rotate_logs();
+    }
     let database_path = resolve_database_path()?;
     append_log(&format!("database: {}", database_path.display()));
     // §17.1 首次运行备份：与桌面进程共用同一安全网（marker 幂等；显式
     // MEMSTACK_DB_PATH 的测试场景跳过）。失败即退出，不写 marker 待重试。
-    if std::env::var("MEMSTACK_DB_PATH").map_or(true, |value| value.trim().is_empty()) {
+    if !test_db_scenario() {
         memory_storage::ensure_first_run_backup(&database_path)
             .map_err(|error| format!("创建首次运行备份失败：{}", error.message))?;
     }
@@ -123,7 +132,18 @@ fn run() -> Result<(), String> {
         database.clone(),
         Arc::new(EmbeddingQueryVectors::new(embedding)),
     ));
-    // 最近记忆活动记录器（v8）：仅成功读取工具与 memory_create 落库。
+    let documents = Arc::new(
+        memory_application::project_document_service::ProjectDocumentService::new(
+            database.clone(),
+            clock.clone(),
+            ids.clone(),
+        ),
+    );
+    let conclusion_cards = Arc::new(memory_application::conclusion_card_service::ConclusionCardService::new(
+        database.clone(),
+        candidates.clone(),
+    ));
+    // 最近记忆活动记录器：成功的读取与写入操作均落库。
     let activity = Arc::new(memory_application::mcp_access::MemoryActivityRecorder::new(
         database,
         clock.clone(),
@@ -134,6 +154,8 @@ fn run() -> Result<(), String> {
         projects,
         workspaces,
         search,
+        documents,
+        conclusion_cards,
         activity: Some(activity),
         // AI 客户端以自身项目目录为 cwd 拉起本进程；部分客户端（WorkBuddy/TraeWork）
         // 的 cwd 是连接实例目录（如 custom-mcp_<server>-<hash>），非用户工作空间——
@@ -152,7 +174,34 @@ fn run() -> Result<(), String> {
             .unwrap_or(false)
     ));
 
-    serve_stdio(&caller, &services)
+    let idle_timeout = resolve_idle_timeout();
+    append_log(&format!(
+        "idle_timeout={}s",
+        idle_timeout.map_or(0, |duration| duration.as_secs())
+    ));
+
+    serve_stdio(&caller, &services, idle_timeout)
+}
+
+/// 解析 stdin 空闲超时：`MEMSTACK_MCP_IDLE_TIMEOUT_SECS` 环境变量优先
+/// （正整数秒；0 = 禁用超时），未设置或值非法时用默认值 30 分钟。
+fn resolve_idle_timeout() -> Option<Duration> {
+    let Ok(raw) = std::env::var("MEMSTACK_MCP_IDLE_TIMEOUT_SECS") else {
+        return Some(Duration::from_secs(DEFAULT_STDIN_IDLE_TIMEOUT_SECS));
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(0) => {
+            append_log("MEMSTACK_MCP_IDLE_TIMEOUT_SECS=0，空闲超时已禁用");
+            None
+        }
+        Ok(secs) => Some(Duration::from_secs(secs)),
+        Err(_) => {
+            append_log(&format!(
+                "MEMSTACK_MCP_IDLE_TIMEOUT_SECS 值无效（{raw:?}），使用默认值 {DEFAULT_STDIN_IDLE_TIMEOUT_SECS}s"
+            ));
+            Some(Duration::from_secs(DEFAULT_STDIN_IDLE_TIMEOUT_SECS))
+        }
+    }
 }
 
 /// 身份双轨加载（T8）：
@@ -230,10 +279,10 @@ fn resolve_database_path() -> Result<std::path::PathBuf, String> {
 
 /// JSON-RPC 帧循环：逐行读取 stdin，响应写 stdout，日志走 stderr/文件。
 ///
-/// 增加 stdin 空闲超时机制：AI 客户端异常退出时 stdin 管道可能不被正确关闭，
-/// 导致 MCP 进程永远阻塞在读取上变成僵尸进程。连续 `STDIN_IDLE_TIMEOUT`
-/// 未收到任何消息时主动退出，日志中记录原因。
-fn serve_stdio(caller: &McpCallerContext, services: &Services) -> Result<(), String> {
+/// stdin 空闲超时（`idle_timeout`）兜底回收客户端遗弃的连接：AI 客户端可能
+/// 对旧对话的 MCP 进程既不发消息也不关闭 stdin；连续超时窗口内无任何帧时
+/// 主动退出，防止僵尸进程堆积。`None` 表示禁用（仅依赖 stdin EOF 退出）。
+fn serve_stdio(caller: &McpCallerContext, services: &Services, idle_timeout: Option<Duration>) -> Result<(), String> {
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
 
     std::thread::spawn(move || {
@@ -256,7 +305,11 @@ fn serve_stdio(caller: &McpCallerContext, services: &Services) -> Result<(), Str
     let mut stdout = std::io::stdout();
 
     loop {
-        match rx.recv_timeout(STDIN_IDLE_TIMEOUT) {
+        let received = match idle_timeout {
+            Some(timeout) => rx.recv_timeout(timeout),
+            None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+        };
+        match received {
             Ok(Ok(line)) => {
                 if line.trim().is_empty() {
                     continue;
@@ -272,6 +325,9 @@ fn serve_stdio(caller: &McpCallerContext, services: &Services) -> Result<(), Str
                 let method = request["method"].as_str().unwrap_or("").to_string();
                 let result = match method.as_str() {
                     "initialize" => initialize_result(),
+                    // MCP 规范：ping 须回空对象；任何帧（含 ping）都会重置空闲计时器，
+                    // 发心跳的客户端因此不会被空闲超时误杀。
+                    "ping" => json!({}),
                     "tools/list" => memory_mcp::registry::tools_list_json(),
                     "tools/call" => match tools_call(caller, services, &request["params"]) {
                         ToolOutcome::Success(value) => value,
@@ -296,14 +352,9 @@ fn serve_stdio(caller: &McpCallerContext, services: &Services) -> Result<(), Str
                 return Err(error);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                append_log(&format!(
-                    "stdin 空闲超时（{}s 无消息），AI 客户端可能已断开",
-                    STDIN_IDLE_TIMEOUT.as_secs()
-                ));
-                eprintln!(
-                    "[MemStack-MCP] stdin 空闲超时（{}s），准备退出",
-                    STDIN_IDLE_TIMEOUT.as_secs()
-                );
+                let secs = idle_timeout.map_or(0, |duration| duration.as_secs());
+                append_log(&format!("stdin 空闲超时（{secs}s 无消息），AI 客户端可能已断开"));
+                eprintln!("[MemStack-MCP] stdin 空闲超时（{secs}s），准备退出");
                 return Ok(());
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -322,13 +373,33 @@ enum ToolOutcome {
 
 fn tools_call(caller: &McpCallerContext, services: &Services, params: &Value) -> ToolOutcome {
     let name = params["name"].as_str().unwrap_or("");
-    if !memory_mcp::registry::is_known_tool(name) {
-        // 与 C# SDK 实测一致：Unknown tool: '<name>'。
-        return ToolOutcome::Failed(format!("Unknown tool: '{name}'"));
-    }
-    match memory_mcp::dispatch::dispatch(name, &params["arguments"], caller, services) {
-        Ok(value) => ToolOutcome::Success(shape_tool_success(value)),
-        Err(error) => ToolOutcome::Success(shape_tool_error(name, error)),
+    let started = std::time::Instant::now();
+    // 与 C# SDK 实测一致：Unknown tool: '<name>'。
+    let outcome = if !memory_mcp::registry::is_known_tool(name) {
+        ToolOutcome::Failed(format!("Unknown tool: '{name}'"))
+    } else {
+        match memory_mcp::dispatch::dispatch(name, &params["arguments"], caller, services) {
+            Ok(value) => ToolOutcome::Success(shape_tool_success(value)),
+            Err(error) => ToolOutcome::Success(shape_tool_error(name, error)),
+        }
+    };
+    // 观测埋点：服务端处理耗时落日志（ok/error/unknown_tool 三态 +
+    // args_bytes 参数体积），把「慢调用」与「大参数」关联起来，可观测可归因。
+    append_log(&format!(
+        "tool_call name={name} outcome={} elapsed_ms={} args_bytes={}",
+        tool_outcome_label(&outcome),
+        started.elapsed().as_millis(),
+        serde_json::to_string(&params["arguments"]).map_or(0, |text| text.len()),
+    ));
+    outcome
+}
+
+/// 观测日志的结果标签：成功 / 业务错误（isError 结果，会话存活）/ 未知工具。
+fn tool_outcome_label(outcome: &ToolOutcome) -> &'static str {
+    match outcome {
+        ToolOutcome::Success(value) if value.get("isError").is_some() => "error",
+        ToolOutcome::Success(_) => "ok",
+        ToolOutcome::Failed(_) => "unknown_tool",
     }
 }
 
@@ -371,26 +442,22 @@ fn strip_nulls(value: Value) -> Value {
     }
 }
 
-/// 业务/参数错误形态：isError 结果 + 「错误码 + 中文消息」的结构化摘要，
-/// 让 AI 客户端能直接看到具体问题，不再只有模糊的 "An error occurred"。
+/// 业务/参数错误形态：isError 结果 + content 文本「[错误码] 中文消息（调用工具：xxx）」。
+///
+/// 不携带 structuredContent：outputSchema 描述的是成功载荷（id/scope/title…），
+/// 错误详情一旦放进 structuredContent，MCP 客户端（TraeWork/WorkBuddy）会按
+/// outputSchema 校验并整体拒绝，真实错误消息到不了 LLM——实测曾把
+/// MCP_PROJECT_SCOPE_DENIED 伪装成「Structured content does not match the
+/// tool's output schema」，排查成本极高。isError=true + 纯 content 文本
+/// 是 MCP 规范允许且 C# 时代验证过的兼容形态。
 fn shape_tool_error(name: &str, error: memory_domain::BusinessError) -> Value {
     let code = error.code.as_str();
     let message = &error.message;
-    // 结构化详情带 code/message，同时 content/text 给 LLM 可读摘要。
-    let structured = json!({
-        "isError": true,
-        "error": {
-            "code": code,
-            "message": message,
-            "tool": name,
-        }
-    });
     json!({
         "content": [{
             "type": "text",
             "text": format!("[{code}] {message}（调用工具：{name}）"),
         }],
-        "structuredContent": structured,
         "isError": true,
     })
 }
@@ -416,23 +483,107 @@ fn error_response(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
-/// 追加日志到 `%LOCALAPPDATA%\MemStack\logs\mcp-stdio.log`；失败时静默忽略。
+/// 测试场景判定：显式 `MEMSTACK_DB_PATH`（测试/诊断数据库）时，本进程
+/// 不触碰生产日志（不写入、不轮换）——cargo test 会并发拉起大量 MCP 子进程，
+/// 逐条写入会污染真实运行日志。
+fn test_db_scenario() -> bool {
+    std::env::var("MEMSTACK_DB_PATH").is_ok_and(|value| !value.trim().is_empty())
+}
+
+/// 解析 mcp-stdio.log 路径：
+/// - `MEMSTACK_MCP_LOG_FILE`（测试钩子）：重定向到指定文件；
+/// - 单元测试进程 / 显式 `MEMSTACK_DB_PATH` 的子进程：不写文件；
+/// - 生产：`%LOCALAPPDATA%\MemStack\logs\mcp-stdio.log`。
+fn log_file_path() -> Option<std::path::PathBuf> {
+    if let Ok(explicit) = std::env::var("MEMSTACK_MCP_LOG_FILE")
+        && !explicit.trim().is_empty()
+    {
+        return Some(std::path::PathBuf::from(explicit));
+    }
+    if cfg!(test) || test_db_scenario() {
+        return None;
+    }
+    memory_platform::logs_dir().ok().map(|dir| dir.join("mcp-stdio.log"))
+}
+
+/// 追加日志到 mcp-stdio.log（路径由 [`log_file_path`] 决定）；失败时静默忽略。
 fn append_log(message: &str) {
     use std::io::Write as _;
 
-    let Ok(logs_dir) = memory_platform::logs_dir() else {
+    let Some(path) = log_file_path() else {
         return;
     };
-    let _ = std::fs::create_dir_all(&logs_dir);
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(logs_dir.join("mcp-stdio.log"))
-    {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis())
             .unwrap_or_default();
         let _ = writeln!(file, "[{timestamp}] [pid={}] {message}", std::process::id());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 环境变量类测试的串行锁（避免并行 env 竞态）。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn idle_timeout_defaults_to_30_minutes() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY：测试串行持有 ENV_LOCK，无并发访问环境变量。
+        unsafe { std::env::remove_var("MEMSTACK_MCP_IDLE_TIMEOUT_SECS") };
+        assert_eq!(
+            resolve_idle_timeout(),
+            Some(Duration::from_secs(DEFAULT_STDIN_IDLE_TIMEOUT_SECS))
+        );
+        assert_eq!(DEFAULT_STDIN_IDLE_TIMEOUT_SECS, 1800);
+    }
+
+    #[test]
+    fn idle_timeout_env_overrides_and_zero_disables() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY：测试串行持有 ENV_LOCK，无并发访问环境变量。
+        unsafe { std::env::set_var("MEMSTACK_MCP_IDLE_TIMEOUT_SECS", "60") };
+        assert_eq!(resolve_idle_timeout(), Some(Duration::from_secs(60)));
+        unsafe { std::env::set_var("MEMSTACK_MCP_IDLE_TIMEOUT_SECS", "0") };
+        assert_eq!(resolve_idle_timeout(), None, "0 必须禁用超时");
+        unsafe { std::env::set_var("MEMSTACK_MCP_IDLE_TIMEOUT_SECS", " 120 ") };
+        assert_eq!(resolve_idle_timeout(), Some(Duration::from_secs(120)), "允许首尾空白");
+        unsafe { std::env::set_var("MEMSTACK_MCP_IDLE_TIMEOUT_SECS", "abc") };
+        assert_eq!(
+            resolve_idle_timeout(),
+            Some(Duration::from_secs(DEFAULT_STDIN_IDLE_TIMEOUT_SECS)),
+            "非法值回退默认"
+        );
+        unsafe { std::env::set_var("MEMSTACK_MCP_IDLE_TIMEOUT_SECS", "") };
+        assert_eq!(
+            resolve_idle_timeout(),
+            Some(Duration::from_secs(DEFAULT_STDIN_IDLE_TIMEOUT_SECS)),
+            "空串视为未设置"
+        );
+        // SAFETY：同上。
+        unsafe { std::env::remove_var("MEMSTACK_MCP_IDLE_TIMEOUT_SECS") };
+    }
+
+    #[test]
+    fn log_file_path_suppresses_tests_and_honors_redirect() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY：测试串行持有 ENV_LOCK，无并发访问环境变量。
+        unsafe { std::env::remove_var("MEMSTACK_DB_PATH") };
+        unsafe { std::env::remove_var("MEMSTACK_MCP_LOG_FILE") };
+        // 单元测试进程（cfg!(test)）默认不写日志文件。
+        assert!(log_file_path().is_none(), "测试进程默认抑制日志文件");
+        // MEMSTACK_MCP_LOG_FILE 重定向优先于抑制规则（观测埋点 e2e 依赖它）。
+        unsafe { std::env::set_var("MEMSTACK_MCP_LOG_FILE", r"C:\tmp\observe.log") };
+        assert_eq!(
+            log_file_path().as_deref(),
+            Some(std::path::Path::new(r"C:\tmp\observe.log"))
+        );
+        unsafe { std::env::remove_var("MEMSTACK_MCP_LOG_FILE") };
     }
 }

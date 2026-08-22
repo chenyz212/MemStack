@@ -11,6 +11,8 @@ pub mod embedding;
 pub mod graph;
 pub mod mcp;
 pub mod memory;
+pub mod project_documents;
 pub mod projects;
+pub mod prompts;
 pub mod search;
 pub mod workspaces;

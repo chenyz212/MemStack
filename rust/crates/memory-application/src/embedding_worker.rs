@@ -148,12 +148,20 @@ impl EmbeddingWorker {
     fn execute(&self, task: &ClaimedTask) {
         let result = (|| -> Result<(), BusinessError> {
             match task.task_type.as_str() {
-                "REBUILD_EMBEDDING" => self.queue_all_memories()?,
+                "REBUILD_EMBEDDING" => {
+                    self.queue_all_memories()?;
+                    self.queue_all_project_documents()?;
+                }
                 "EMBED_MEMORY" => {
                     if let Some(memory_id) = task.target_id.as_deref() {
                         self.embedding.process_memory(memory_id)?;
                         // Embedding 成功后再次重算该记忆的关系（计划 §后台关系计算）。
                         self.graph.recompute_memory(memory_id)?;
+                    }
+                }
+                "EMBED_PROJECT_DOCUMENT" => {
+                    if let Some(document_id) = task.target_id.as_deref() {
+                        self.embedding.process_project_document(document_id)?;
                     }
                 }
                 "REBUILD_GRAPH_MEMORY" => {
@@ -184,6 +192,23 @@ impl EmbeddingWorker {
                  SELECT lower(hex(randomblob(16))),'EMBED_MEMORY',m.id,'PENDING',0,$now,NULL,NULL,$now,$now \
                  FROM memory m WHERE m.status='Active' AND m.cloud_processing_allowed=1 \
                  AND NOT EXISTS(SELECT 1 FROM background_task t WHERE t.task_type='EMBED_MEMORY' AND t.target_id=m.id AND t.status IN ('PENDING','RUNNING'));",
+                params![now_text],
+            )
+            .map_err(map_sqlite_error)?;
+        Ok(())
+    }
+
+    /// 为全部已开启项目级 Embedding 的正式文档创建去重任务。
+    fn queue_all_project_documents(&self) -> Result<(), BusinessError> {
+        let connection = self.database.open()?;
+        let now_text = format_storage_time(self.clock.now_utc());
+        connection
+            .execute(
+                "INSERT INTO background_task(id,task_type,target_id,status,attempt_count,next_attempt_at,error_code,error_message,created_at,updated_at) \
+                 SELECT lower(hex(randomblob(16))),'EMBED_PROJECT_DOCUMENT',d.id,'PENDING',0,$now,NULL,NULL,$now,$now \
+                 FROM project_document d INNER JOIN project p ON p.id=d.project_id \
+                 WHERE p.project_document_embedding_enabled=1 \
+                 AND NOT EXISTS(SELECT 1 FROM background_task t WHERE t.task_type='EMBED_PROJECT_DOCUMENT' AND t.target_id=d.id AND t.status IN ('PENDING','RUNNING'));",
                 params![now_text],
             )
             .map_err(map_sqlite_error)?;
@@ -462,6 +487,22 @@ mod tests {
             id
         };
         let _no_cloud = create_memory(&context, "记忆四", false);
+        let connection = context.database.open().unwrap();
+        connection
+            .execute(
+                "INSERT INTO project(id,name,description,color,is_archived,project_document_embedding_enabled,created_at,updated_at) \
+                 VALUES('project-rebuild','重建项目','','#238f7a',0,1,'2026-08-15T08:00:00+00:00','2026-08-15T08:00:00+00:00');",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO project_document(id,project_id,document_type,relative_path,content,checksum,version,embedding_enabled,sync_status,created_at,updated_at) \
+                 VALUES('document-rebuild','project-rebuild','CONTEXT','01_CONTEXT.md','项目重建正文','project-checksum',1,1,'SYNCED','2026-08-15T08:00:00+00:00','2026-08-15T08:00:00+00:00');",
+                [],
+            )
+            .unwrap();
+        drop(connection);
         clear_tasks(&context);
         enable_settings_raw(&context);
         // REBUILD 先入队（最早），再预置 active1 的 PENDING EMBED（验证扇出去重）。
@@ -475,7 +516,12 @@ mod tests {
             count_tasks(&context, "task_type='EMBED_MEMORY' AND status='PENDING'"),
             2
         );
-        // 领取并处理两条 EMBED 任务：HTTP 成功 → 向量落库、任务删除。
+        assert_eq!(
+            count_tasks(&context, "task_type='EMBED_PROJECT_DOCUMENT' AND status='PENDING'"),
+            1
+        );
+        // 领取并处理两条记忆与一条项目文档任务：HTTP 成功 → 独立向量落库、任务删除。
+        assert!(worker.run_one_cycle());
         assert!(worker.run_one_cycle());
         assert!(worker.run_one_cycle());
         assert!(!worker.run_one_cycle());
@@ -491,9 +537,13 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
+        let project_vector: i64 = connection
+            .query_row("SELECT count(*) FROM project_document_embedding;", [], |row| row.get(0))
+            .unwrap();
         drop(connection);
         assert_eq!(embedded, 2);
         assert_eq!(archived_vector, 0);
+        assert_eq!(project_vector, 1);
     }
 
     #[test]

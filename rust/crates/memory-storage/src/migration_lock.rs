@@ -58,9 +58,17 @@ pub fn open_initialized(path: &Path) -> Result<Connection, BusinessError> {
 }
 
 /// 追加迁移日志到 `%LOCALAPPDATA%\MemStack\logs\database-migration.log`；失败静默。
+/// 测试场景不写生产日志（防污染）：显式 `MEMSTACK_DB_PATH` 的 MCP 测试子进程，
+/// 以及 cargo run/test 拉起的进程（storage 集成测试在 temp 库上跑迁移）。
+/// 生产桌面/MCP 进程两者皆无，正常记录。
 fn append_migration_log(report: &MigrationReport) {
     use std::io::Write as _;
 
+    let test_scenario = std::env::var("MEMSTACK_DB_PATH").is_ok_and(|value| !value.trim().is_empty())
+        || std::env::var("CARGO_PKG_NAME").is_ok();
+    if test_scenario {
+        return;
+    }
     let Ok(logs_dir) = memory_platform::logs_dir() else {
         return;
     };

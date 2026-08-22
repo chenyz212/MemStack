@@ -1,4 +1,4 @@
-//! 迁移锁并发测试：双线程并发 open_initialized 同一低版本副本，必须串行迁移且终态 v8。
+//! 迁移锁并发测试：双线程并发 open_initialized 同一低版本副本，必须串行迁移且终态 v10。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,7 +8,7 @@ fn repo_root() -> PathBuf {
 }
 
 #[test]
-fn concurrent_open_initialized_converges_to_version_8() {
+fn concurrent_open_initialized_converges_to_version_10() {
     let sample = repo_root().join("testdata/db-samples/v3.db");
     if !sample.exists() {
         eprintln!("跳过：缺少 v3.db 样本");
@@ -35,7 +35,7 @@ fn concurrent_open_initialized_converges_to_version_8() {
             connection
                 .query_row("PRAGMA user_version;", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            8
+            10
         );
     }
     let connection = memory_storage::open_read_only_connection(&database_path).unwrap();

@@ -202,6 +202,8 @@ export interface SearchResult {
   memory: MemoryItem
   score: number
   matchReasons: string[]
+  /** 语义相似度（余弦值 0~1）；纯关键词命中时为 null。 */
+  semanticSimilarity?: number | null
 }
 
 export interface OverviewResult {
@@ -214,7 +216,7 @@ export interface OverviewResult {
   mcpStatus: string
   recentAssistantName: string | null
   lastMcpCallAt: string | null
-  /** 最近一次 MCP 读取/创建活动（无则 null） */
+  /** 最近一次 MCP 记忆活动（无则 null） */
   mcpActivity: McpActivitySummary | null
   /** 未吊销未过期的 AI 工具（最多 6 个，按最近使用排序） */
   recentClients: OverviewClient[]
@@ -225,7 +227,7 @@ export interface OverviewResult {
 /** MCP 最近记忆活动摘要（不含项目名、标题与正文）。 */
 export interface McpActivitySummary {
   displayName: string
-  action: 'READ' | 'CREATE'
+  action: 'READ' | 'CREATE' | 'UPDATE' | 'ARCHIVE'
   scope: 'Personal' | 'Project' | 'Mixed'
   occurredAt: string
 }
@@ -298,6 +300,114 @@ export interface CursorPage<T> {
   items: T[]
   nextCursor: string | null
   hasMore: boolean
+}
+
+// ---------------------------------------------------------------------------
+// 项目全局文档与结论卡片
+// ---------------------------------------------------------------------------
+
+export type ProjectDocumentType = 'CONTEXT' | 'DECISIONS' | 'CURRENT_STATUS' | 'PROBLEMS' | 'CHANGELOG'
+
+/** 一份初始化草稿。 */
+export interface ProjectDocumentDraftItem {
+  id: string
+  projectId: string
+  documentType: ProjectDocumentType
+  relativePath: string
+  content: string
+  checksum: string
+  version: number
+  reviewStatus: 'PENDING_REVIEW' | 'APPROVED'
+  approvedVersion: number | null
+  lastChangeReason: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+/** 一份正式项目文档镜像（只读）。 */
+export interface ProjectDocumentItem {
+  id: string
+  projectId: string
+  documentType: ProjectDocumentType
+  relativePath: string
+  content: string
+  checksum: string
+  version: number
+  previousVersion: number | null
+  embeddingEnabled: boolean
+  syncStatus: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** 项目文档状态总览。 */
+export interface ProjectDocumentOverview {
+  projectId: string
+  projectName: string
+  workspacePath: string | null
+  status: 'NOT_INITIALIZED' | 'DRAFT_PENDING_REVIEW' | 'DRAFT_PARTIALLY_APPROVED' | 'DRAFT_ALL_APPROVED' | 'PROMOTING' | 'ACTIVE'
+  drafts: ProjectDocumentDraftItem[]
+  documents: ProjectDocumentState[]
+  embeddingEnabled: boolean
+  hasResidualDrafts: boolean
+  lastSyncedAt: string | null
+}
+
+/** 总览中的单份正式文档状态。 */
+export interface ProjectDocumentState {
+  documentType: ProjectDocumentType
+  relativePath: string
+  version: number
+  checksumPrefix: string
+  syncStatus: string
+  updatedAt: string
+  fileExists: boolean
+}
+
+/** 结论卡片结构化数据（候选与正式共用）。 */
+export interface ConclusionCardPayload {
+  title: string
+  problemId: string | null
+  problemDescription: string
+  finalConclusion: string
+  rootCause: string
+  applicableConditions: string[]
+  notApplicableConditions: string[]
+  evidence: string[]
+  verifiedResults: string[]
+  failedAttempts: string[]
+  doNotRepeat: string[]
+  retryConditions: string[]
+  nextSteps: string[]
+  keywords: string[]
+  tags: string[]
+  importance: number
+  importanceReason: string
+  cloudEmbeddingAllowed: boolean
+  resolvedAt: string
+}
+
+/** 正式结论卡片。 */
+export interface ConclusionCardItem {
+  memoryId: string
+  title: string
+  problemId: string | null
+  payload: ConclusionCardPayload
+  createdAt: string
+  updatedAt: string
+}
+
+/** AI 全局提示词预览/安装结果。 */
+export interface PromptReport {
+  clientType: string
+  templateVersion: string
+  serviceId: string
+  promptText: string
+  canInstall: boolean
+  configPath: string | null
+  installed: boolean
+  diffText: string
+  backupPath: string | null
 }
 
 export interface EmbeddingSettings {
@@ -437,6 +547,60 @@ const routes: LocalRoute[] = [
     },
   })),
   route('POST', /^\/api\/graph\/rebuild$/, 'rebuild_graph'),
+
+  // 项目全局文档（具体路径必须先于 :type 通配）
+  route('GET', /^\/api\/projects\/([^/]+)\/documents$/, 'get_project_document_overview', (match) => ({ projectId: match[1] })),
+  route('DELETE', /^\/api\/projects\/([^/]+)\/documents\/drafts$/, 'delete_project_document_drafts', (match) => ({ projectId: match[1] })),
+  route('POST', /^\/api\/projects\/([^/]+)\/documents\/drafts\/promote$/, 'promote_project_document_drafts', (match) => ({ projectId: match[1] })),
+  route('GET', /^\/api\/projects\/([^/]+)\/documents\/drafts$/, 'list_project_document_drafts', (match) => ({ projectId: match[1] })),
+  route('GET', /^\/api\/projects\/([^/]+)\/documents\/drafts\/([^/]+)$/, 'get_project_document_draft', (match) => ({
+    projectId: match[1],
+    documentType: match[2],
+  })),
+  route('PUT', /^\/api\/projects\/([^/]+)\/documents\/drafts\/([^/]+)$/, 'save_project_document_draft', (match, _params, body) => ({
+    projectId: match[1],
+    documentType: match[2],
+    expectedVersion: (body as { expectedVersion?: number } | undefined)?.expectedVersion,
+    content: (body as { content?: string } | undefined)?.content,
+  })),
+  route('POST', /^\/api\/projects\/([^/]+)\/documents\/drafts\/([^/]+)\/approve$/, 'approve_project_document_draft', (match) => ({
+    projectId: match[1],
+    documentType: match[2],
+  })),
+  route('POST', /^\/api\/projects\/([^/]+)\/documents\/drafts\/([^/]+)\/revoke$/, 'revoke_project_document_draft_approval', (match) => ({
+    projectId: match[1],
+    documentType: match[2],
+  })),
+  route('GET', /^\/api\/projects\/([^/]+)\/documents\/embedding$/, 'get_project_document_embedding_enabled', (match) => ({ projectId: match[1] })),
+  route('PUT', /^\/api\/projects\/([^/]+)\/documents\/embedding$/, 'set_project_document_embedding_enabled', (match, _params, body) => ({
+    projectId: match[1],
+    enabled: (body as { enabled?: boolean } | undefined)?.enabled,
+  })),
+  route('POST', /^\/api\/projects\/([^/]+)\/documents\/([^/]+)\/repair$/, 'repair_project_document', (match) => ({
+    projectId: match[1],
+    documentType: match[2],
+  })),
+  route('GET', /^\/api\/projects\/([^/]+)\/documents\/([^/]+)$/, 'get_project_document', (match) => ({
+    projectId: match[1],
+    documentType: match[2],
+  })),
+
+  // 结论卡片
+  route('GET', /^\/api\/projects\/([^/]+)\/conclusion-cards$/, 'list_conclusion_cards', (match) => ({ projectId: match[1] })),
+  route('GET', /^\/api\/memory-candidates\/([^/]+)\/conclusion-payload$/, 'get_conclusion_card_candidate_payload', (match) => ({ candidateId: match[1] })),
+  route('PUT', /^\/api\/memory-candidates\/([^/]+)\/conclusion-payload$/, 'update_conclusion_card_candidate_payload', (match, _params, body) => ({
+    candidateId: match[1],
+    payload: (body as { payload?: unknown } | undefined)?.payload,
+    expectedVersion: (body as { expectedVersion?: number } | undefined)?.expectedVersion,
+  })),
+
+  // AI 全局提示词
+  route('GET', /^\/api\/ai-prompt\/preview$/, 'get_ai_prompt_preview', (_match, params) => ({
+    clientType: params.get('clientType') ?? '',
+  })),
+  route('POST', /^\/api\/ai-prompt\/install$/, 'install_ai_prompt', (_match, _params, body) => ({
+    clientType: (body as { clientType?: string } | undefined)?.clientType,
+  })),
 
   // Embedding 设置
   route('GET', /^\/api\/settings\/embedding$/, 'get_embedding_settings'),

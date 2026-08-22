@@ -239,7 +239,8 @@ fn mcp_rust_workspace_flow() {
     let _ = std::fs::remove_dir_all(&work);
 }
 
-/// Rust 单侧 e2e：错误路径契约（业务错误为 isError + 「错误码 中文消息」结构化摘要；未知工具/方法为 JSON-RPC -32602/-32601）。
+/// Rust 单侧 e2e：错误路径契约（业务错误为 isError + content「[错误码] 中文消息」文本、
+/// 不携带 structuredContent；未知工具/方法为 JSON-RPC -32602/-32601）。
 #[test]
 fn mcp_rust_error_shapes() {
     let work = std::env::temp_dir().join(format!("memstack-ws-errors-{}", std::process::id()));
@@ -266,7 +267,9 @@ fn mcp_rust_error_shapes() {
     let rust_exe = PathBuf::from(env!("CARGO_BIN_EXE_MemStack-MCP"));
     let responses = ChildSession::spawn("rust", &rust_exe, &database, &full_token).run(&script);
     assert_eq!(responses.len(), 7, "七帧请求各一响应");
-    // —— 前四帧业务错误：isError=true + content 文本以 "[XXX]" 形式带错误码开头 + structuredContent.error 含 code/message/tool ——
+    // —— 前四帧业务错误：isError=true + content 文本以 "[XXX]" 形式带错误码开头，
+    //    且不得携带 structuredContent（错误形态不符合 outputSchema，MCP 客户端
+    //    会按 outputSchema 校验拒绝并吞掉真实错误消息）——
     let business_expectations: &[(usize, &str, &str); 4] = &[
         (1, "MEMORY_NOT_FOUND", "记忆不存在"),
         (2, "INTERNAL_ERROR", "参数解析失败"),
@@ -292,25 +295,12 @@ fn mcp_rust_error_shapes() {
             "第 {} 帧 content 应包含中文摘要 '{expected_msg_prefix}'",
             index + 1
         );
-        // 结构化详情也应有 code/message/tool。
-        let structured_error = &frame["result"]["structuredContent"]["error"];
-        assert_eq!(
-            structured_error["code"],
-            json!(expected_code),
-            "第 {} 帧 structuredContent.error.code 一致",
-            index + 1
-        );
+        // 错误结果不得携带 structuredContent。
         assert!(
-            structured_error["message"]
-                .as_str()
-                .is_some_and(|m| m.contains(expected_msg_prefix)),
-            "第 {} 帧 structuredContent.error.message 含中文摘要",
-            index + 1
-        );
-        assert!(
-            structured_error["tool"].as_str().is_some_and(|t| !t.is_empty()),
-            "第 {} 帧 structuredContent.error.tool 非空",
-            index + 1
+            frame["result"].get("structuredContent").is_none(),
+            "第 {} 帧业务错误不得携带 structuredContent，实际: {}",
+            index + 1,
+            frame["result"]
         );
     }
     let unknown_tool: Value = serde_json::from_str(&responses[5]).unwrap();

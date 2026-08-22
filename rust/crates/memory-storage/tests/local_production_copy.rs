@@ -28,8 +28,8 @@ fn opens_local_production_copy() {
     memory_storage::verify_fts5(&connection).unwrap();
     let version = memory_storage::detect_schema_version(&connection).unwrap();
     assert!(
-        version == 7 || version == 8,
-        "生产库结构版本必须为 7（升级前副本）或 8（升级后）：实际 {version}"
+        version == 7 || version == 8 || version == 9 || version == 10,
+        "生产库结构版本必须为 7/8/9/10（7=旧基线，8/9=历史 Rust 版本，10=当前版）：实际 {version}"
     );
 
     for table in [

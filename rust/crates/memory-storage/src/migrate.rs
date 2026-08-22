@@ -276,15 +276,118 @@ WHERE session_id IS NOT NULL AND length(session_id) = 32 AND instr(session_id, '
 
 /// v8：mcp_token 增加最近记忆活动字段（总览活动文案数据源）。
 const SCHEMA_V8_SQL: &str = r#"
--- 最近一次成功的读取/创建活动（仅五个读取工具与 memory_create 记录）。
+-- 最近一次成功的 MCP 记忆活动。
 ALTER TABLE mcp_token ADD COLUMN last_memory_action TEXT NULL;
 -- Personal / Project / Mixed。
 ALTER TABLE mcp_token ADD COLUMN last_action_scope TEXT NULL;
 ALTER TABLE mcp_token ADD COLUMN last_action_at TEXT NULL;
 "#;
 
+/// v9：项目全局文档 + 初始化草稿 + 晋升记录 + 结论卡片扩展表。
+///
+/// - 正式 Markdown 文件是唯一事实来源，`project_document` 只保存镜像与同步状态。
+/// - `project_document_draft` 保存初始化草稿与审核状态（每项目每类型唯一）。
+/// - `project_document_promotion` 记录晋升操作进度，用于崩溃恢复。
+/// - `conclusion_card` 是 SOLUTION 记忆的结构化扩展（候选数据存 memory_candidate）。
+/// - project 表新增文档 Embedding 开关（默认关闭）与最近工作空间绝对路径。
+const SCHEMA_V9_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS project_document (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES project(id),
+    document_type TEXT NOT NULL CHECK (document_type IN ('CONTEXT','DECISIONS','CURRENT_STATUS','PROBLEMS','CHANGELOG')),
+    relative_path TEXT NOT NULL,
+    content TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    previous_content TEXT NULL,
+    previous_checksum TEXT NULL,
+    previous_version INTEGER NULL,
+    embedding_enabled INTEGER NOT NULL DEFAULT 0 CHECK (embedding_enabled IN (0, 1)),
+    sync_status TEXT NOT NULL DEFAULT 'SYNCED' CHECK (sync_status IN ('SYNCED','SYNC_PENDING','CONFLICT','FORMAT_ERROR','REPAIR_PENDING')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(project_id, document_type)
+);
+CREATE INDEX IF NOT EXISTS idx_project_document_updated
+ON project_document(updated_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS project_document_draft (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES project(id),
+    document_type TEXT NOT NULL CHECK (document_type IN ('CONTEXT','DECISIONS','CURRENT_STATUS','PROBLEMS','CHANGELOG')),
+    relative_path TEXT NOT NULL,
+    content TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    review_status TEXT NOT NULL DEFAULT 'PENDING_REVIEW' CHECK (review_status IN ('PENDING_REVIEW','APPROVED')),
+    approved_version INTEGER NULL,
+    last_change_reason TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(project_id, document_type)
+);
+CREATE INDEX IF NOT EXISTS idx_project_document_draft_updated
+ON project_document_draft(updated_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS project_document_promotion (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES project(id),
+    status TEXT NOT NULL CHECK (status IN ('IN_PROGRESS','COMPLETED','FAILED')),
+    error_message TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_project_document_promotion_active
+ON project_document_promotion(project_id) WHERE status='IN_PROGRESS';
+
+CREATE TABLE IF NOT EXISTS conclusion_card (
+    memory_id TEXT PRIMARY KEY REFERENCES memory(id) ON DELETE CASCADE,
+    problem_id TEXT NULL,
+    structured_payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conclusion_card_problem ON conclusion_card(problem_id);
+
+-- 结论卡片候选：结构化数据随候选行保存，确认时在同一事务内转为 conclusion_card。
+ALTER TABLE memory_candidate ADD COLUMN structured_payload_json TEXT NULL;
+
+ALTER TABLE project ADD COLUMN project_document_embedding_enabled INTEGER NOT NULL DEFAULT 0
+    CHECK (project_document_embedding_enabled IN (0, 1));
+ALTER TABLE project ADD COLUMN project_document_workspace_path TEXT NULL;
+"#;
+
+/// v10：项目文档独立全文索引与向量索引。
+///
+/// 项目文档不是普通记忆，因此使用独立表，避免污染 memory 与 memory_embedding 契约。
+const SCHEMA_V10_SQL: &str = r#"
+CREATE VIRTUAL TABLE IF NOT EXISTS project_document_fts USING fts5(
+    project_id UNINDEXED,
+    document_type UNINDEXED,
+    content_tokens,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+INSERT INTO project_document_fts(project_id,document_type,content_tokens)
+SELECT project_id,document_type,content FROM project_document;
+
+CREATE TABLE IF NOT EXISTS project_document_embedding (
+    project_id TEXT NOT NULL,
+    document_type TEXT NOT NULL CHECK (document_type IN ('CONTEXT','DECISIONS','CURRENT_STATUS','PROBLEMS','CHANGELOG')),
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    content_checksum TEXT NOT NULL,
+    vector_blob BLOB NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(project_id, document_type),
+    FOREIGN KEY(project_id, document_type) REFERENCES project_document(project_id, document_type) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_project_document_embedding_updated
+ON project_document_embedding(updated_at DESC, project_id, document_type);
+"#;
+
 /// 完整迁移链（版本 → 段 SQL）。
-const MIGRATION_CHAIN: [(i64, &str); 8] = [
+const MIGRATION_CHAIN: [(i64, &str); 10] = [
     (1, SCHEMA_V1_SQL),
     (2, SCHEMA_V2_SQL),
     (3, SCHEMA_V3_SQL),
@@ -293,6 +396,8 @@ const MIGRATION_CHAIN: [(i64, &str); 8] = [
     (6, SCHEMA_V6_SQL),
     (7, SCHEMA_V7_SQL),
     (8, SCHEMA_V8_SQL),
+    (9, SCHEMA_V9_SQL),
+    (10, SCHEMA_V10_SQL),
 ];
 
 /// 迁移执行报告（供日志与验收记录）。
@@ -346,7 +451,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fresh_database_migrates_to_version_8_with_all_tables() {
+    fn fresh_database_migrates_to_version_10_with_all_tables() {
         let directory = std::env::temp_dir().join(format!("memstack-migrate-fresh-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
@@ -356,20 +461,22 @@ mod tests {
 
         let report = run_migrations(&mut connection).unwrap();
         assert_eq!(report.from_version, 0);
-        assert_eq!(report.to_version, 8);
-        assert_eq!(report.steps, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(report.to_version, 10);
+        assert_eq!(report.steps, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
-        assert_eq!(crate::schema::detect_schema_version(&connection).unwrap(), 8);
+        assert_eq!(crate::schema::detect_schema_version(&connection).unwrap(), 10);
         let tables: i64 = connection
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type IN ('table','view') AND name IN
                     ('app_setting','project','memory','memory_revision','memory_embedding','memory_edge',
-                     'memory_candidate','mcp_token','mcp_client_session','background_task','memory_fts');",
+                     'memory_candidate','mcp_token','mcp_client_session','background_task','memory_fts',
+                     'project_document','project_document_draft','project_document_promotion','conclusion_card',
+                     'project_document_fts','project_document_embedding');",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 11);
+        assert_eq!(tables, 17);
         // v8：活动字段已就位。
         let action_columns: i64 = connection
             .query_row(
@@ -380,6 +487,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(action_columns, 3);
+        // v9：项目文档 Embedding 开关与工作空间路径列已就位。
+        let project_doc_columns: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('project') WHERE name IN
+                    ('project_document_embedding_enabled','project_document_workspace_path');",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(project_doc_columns, 2);
         let _ = std::fs::remove_dir_all(&directory);
     }
 
@@ -393,7 +510,35 @@ mod tests {
         run_migrations(&mut connection).unwrap();
         let report = run_migrations(&mut connection).unwrap();
         assert!(report.steps.is_empty());
-        assert_eq!(report.to_version, 8);
+        assert_eq!(report.to_version, 10);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// v9：project_document 唯一约束（project_id + document_type）生效。
+    #[test]
+    fn project_document_unique_constraint_rejects_duplicate_type() {
+        let directory = std::env::temp_dir().join(format!("memstack-migrate-unique-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("memory.db");
+        let mut connection = crate::connection::open_connection(&path).unwrap();
+        run_migrations(&mut connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO project(id,name,description,color,is_archived,created_at,updated_at)
+                 VALUES('p1','项目','','#111111',0,'2026-08-21T00:00:00+00:00','2026-08-21T00:00:00+00:00');",
+                [],
+            )
+            .unwrap();
+        let insert = |id: &str| {
+            connection.execute(
+                "INSERT INTO project_document(id,project_id,document_type,relative_path,content,checksum,version,created_at,updated_at)
+                 VALUES($id,'p1','CONTEXT','01_CONTEXT.md','内容','ck',1,'2026-08-21T00:00:00+00:00','2026-08-21T00:00:00+00:00');",
+                [id],
+            )
+        };
+        insert("d1").unwrap();
+        assert!(insert("d2").is_err(), "同项目同类型必须唯一");
         let _ = std::fs::remove_dir_all(&directory);
     }
 }

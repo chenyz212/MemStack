@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use memory_application::candidate_service::MemoryCandidateService;
 use memory_application::clock::SystemClock;
+use memory_application::conclusion_card_service::ConclusionCardService;
 use memory_application::db::Database;
 use memory_application::embedding_service::{EmbeddingService, UreqEmbeddingClient};
 use memory_application::embedding_worker::{self, WorkerHandle};
@@ -16,6 +17,7 @@ use memory_application::graph_service::GraphService;
 use memory_application::mcp_access::McpAccessService;
 use memory_application::memory_service::MemoryService;
 use memory_application::overview_service::OverviewService;
+use memory_application::project_document_service::ProjectDocumentService;
 use memory_application::project_service::ProjectService;
 use memory_application::search_service::{EmbeddingQueryVectors, SearchService};
 use memory_application::workspace_service::WorkspaceService;
@@ -43,6 +45,10 @@ pub struct AppState {
     pub search: Arc<SearchService>,
     /// 记忆图谱服务（memory_edge 关系计算与全局/邻域查询）。
     pub graph: Arc<GraphService>,
+    /// 项目全局文档服务（五份文档 + 草稿审核 + 晋升 + 同步 + 交接）。
+    pub documents: Arc<ProjectDocumentService>,
+    /// 结论卡片服务（候选编辑与正式卡片查询）。
+    pub conclusion_cards: Arc<ConclusionCardService>,
     /// 数据版本探测连接（专用长连接：`PRAGMA data_version` 仅在
     /// 其他连接提交时递增，供前端 1 秒轻探测替代定时全量刷新）。
     pub data_version_probe: Mutex<rusqlite::Connection>,
@@ -91,7 +97,13 @@ impl AppState {
             database.clone(),
             Arc::new(EmbeddingQueryVectors::new(embedding.clone())),
         ));
-        let graph = Arc::new(GraphService::new(database, clock.clone(), ids));
+        let graph = Arc::new(GraphService::new(database.clone(), clock.clone(), ids.clone()));
+        let documents = Arc::new(ProjectDocumentService::new(
+            database.clone(),
+            clock.clone(),
+            ids.clone(),
+        ));
+        let conclusion_cards = Arc::new(ConclusionCardService::new(database.clone(), candidates.clone()));
         // 迁移在上方 open_initialized 已完成，探测连接只需普通打开。
         let data_version_probe = memory_storage::open_connection(&database_path)?;
         Ok(Self {
@@ -105,6 +117,8 @@ impl AppState {
             embedding,
             search,
             graph,
+            documents,
+            conclusion_cards,
             data_version_probe: Mutex::new(data_version_probe),
             worker: Mutex::new(None),
         })
@@ -178,7 +192,7 @@ mod tests {
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .unwrap_or(0);
-        assert_eq!(version, 8, "schema 应为 8");
+        assert_eq!(version, 10, "schema 应为 10");
         // 各服务已装配（以一次真实调用验证非空可用）。
         assert!(state.memories.get_facets().is_ok());
         assert!(state.projects.list(false).is_ok());
