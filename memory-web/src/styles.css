@@ -1705,6 +1705,15 @@ select:focus-visible {
   box-shadow: 0 4px 12px rgba(0, 122, 255, 0.08);
 }
 
+/* 搜索结果的语义匹配度徽章（占据收藏/置顶标记的位置） */
+.memory-card-markers .match-score {
+  border-color: var(--success-soft);
+  color: var(--success);
+  background: var(--success-soft);
+  box-shadow: 0 4px 12px var(--success-soft);
+  font-variant-numeric: tabular-nums;
+}
+
 .memory-card-details {
   display: flex;
   align-items: center;
@@ -3525,6 +3534,12 @@ select:focus-visible {
 
 .modal-card.memory-editor {
   width: min(840px, 92vw);
+}
+
+/* 普通记忆表单在共享弹窗容器内保持原有栅格节奏。 */
+.memory-editor-form {
+  display: grid;
+  gap: 16px;
 }
 
 .modal-heading {

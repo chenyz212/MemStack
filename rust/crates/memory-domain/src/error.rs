@@ -155,6 +155,46 @@ pub enum ErrorCode {
     EmbeddingDimensionsInvalid,
     #[serde(rename = "EMBEDDING_DIMENSIONS_MISMATCH")]
     EmbeddingDimensionsMismatch,
+
+    // ---- 项目文档（五份全局文档）----
+    /// 项目文档不存在。
+    #[serde(rename = "PROJECT_DOCUMENT_NOT_FOUND")]
+    ProjectDocumentNotFound,
+    /// 文档类型无效（只允许 CONTEXT/DECISIONS/CURRENT_STATUS/PROBLEMS/CHANGELOG）。
+    #[serde(rename = "PROJECT_DOCUMENT_TYPE_INVALID")]
+    ProjectDocumentTypeInvalid,
+    /// 更新项目文档必须携带版本号。
+    #[serde(rename = "PROJECT_DOCUMENT_VERSION_REQUIRED")]
+    ProjectDocumentVersionRequired,
+    /// 项目文档已被其他操作修改（乐观锁冲突）。
+    #[serde(rename = "PROJECT_DOCUMENT_VERSION_CONFLICT")]
+    ProjectDocumentVersionConflict,
+    /// 正式项目文档已存在，拒绝创建初始化草稿。
+    #[serde(rename = "PROJECT_DOCUMENT_ALREADY_ACTIVE")]
+    ProjectDocumentAlreadyActive,
+    /// 初始化草稿已存在，返回现有草稿而不是重复创建。
+    #[serde(rename = "PROJECT_DOCUMENT_DRAFT_EXISTS")]
+    ProjectDocumentDraftExists,
+    /// 五份初始化草稿不齐全，拒绝整体创建。
+    #[serde(rename = "PROJECT_DOCUMENT_DRAFT_INCOMPLETE")]
+    ProjectDocumentDraftIncomplete,
+    /// 项目文档 YAML 或正文格式无效。
+    #[serde(rename = "PROJECT_DOCUMENT_FORMAT_INVALID")]
+    ProjectDocumentFormatInvalid,
+    /// 工作空间未绑定项目或路径无法解析到绑定项目。
+    #[serde(rename = "PROJECT_DOCUMENT_WORKSPACE_UNBOUND")]
+    ProjectDocumentWorkspaceUnbound,
+    /// 晋升中断，需要执行恢复流程后重试。
+    #[serde(rename = "PROJECT_DOCUMENT_PROMOTION_INCOMPLETE")]
+    ProjectDocumentPromotionIncomplete,
+
+    // ---- 结论卡片 ----
+    /// 结论卡片必填字段缺失。
+    #[serde(rename = "CONCLUSION_CARD_FIELD_REQUIRED")]
+    ConclusionCardFieldRequired,
+    /// 结论卡片不存在。
+    #[serde(rename = "CONCLUSION_CARD_NOT_FOUND")]
+    ConclusionCardNotFound,
 }
 
 impl std::fmt::Display for ErrorCode {
@@ -229,6 +269,18 @@ impl ErrorCode {
             Self::EmbeddingConfigIncomplete => "EMBEDDING_CONFIG_INCOMPLETE",
             Self::EmbeddingDimensionsInvalid => "EMBEDDING_DIMENSIONS_INVALID",
             Self::EmbeddingDimensionsMismatch => "EMBEDDING_DIMENSIONS_MISMATCH",
+            Self::ProjectDocumentNotFound => "PROJECT_DOCUMENT_NOT_FOUND",
+            Self::ProjectDocumentTypeInvalid => "PROJECT_DOCUMENT_TYPE_INVALID",
+            Self::ProjectDocumentVersionRequired => "PROJECT_DOCUMENT_VERSION_REQUIRED",
+            Self::ProjectDocumentVersionConflict => "PROJECT_DOCUMENT_VERSION_CONFLICT",
+            Self::ProjectDocumentAlreadyActive => "PROJECT_DOCUMENT_ALREADY_ACTIVE",
+            Self::ProjectDocumentDraftExists => "PROJECT_DOCUMENT_DRAFT_EXISTS",
+            Self::ProjectDocumentDraftIncomplete => "PROJECT_DOCUMENT_DRAFT_INCOMPLETE",
+            Self::ProjectDocumentFormatInvalid => "PROJECT_DOCUMENT_FORMAT_INVALID",
+            Self::ProjectDocumentWorkspaceUnbound => "PROJECT_DOCUMENT_WORKSPACE_UNBOUND",
+            Self::ProjectDocumentPromotionIncomplete => "PROJECT_DOCUMENT_PROMOTION_INCOMPLETE",
+            Self::ConclusionCardFieldRequired => "CONCLUSION_CARD_FIELD_REQUIRED",
+            Self::ConclusionCardNotFound => "CONCLUSION_CARD_NOT_FOUND",
         }
     }
 
@@ -291,7 +343,7 @@ impl ErrorCode {
             Self::McpPermissionDenied => "当前 Token 仅有读取权限",
             Self::McpProjectScopeDenied => "当前 Token 只能访问绑定项目",
             Self::McpConnectionTestFailed => "MCP 连接测试失败（阶段 5 提供 stdio 实现）",
-            Self::McpToolListInvalid => "MCP 工具清单与固定的 16 个工具不一致",
+            Self::McpToolListInvalid => "MCP 工具清单与固定的 21 个工具不一致",
             Self::McpToolCallFailed => "MCP 工具调用失败",
             Self::McpProtocolError => "MCP 协议调用返回错误",
             Self::McpResponseInvalid => "MCP 返回了无法识别的协议响应",
@@ -299,6 +351,22 @@ impl ErrorCode {
             Self::EmbeddingConfigIncomplete => "模型名称和 API Key 不能为空",
             Self::EmbeddingDimensionsInvalid => "向量维度必须为 128 到 1536",
             Self::EmbeddingDimensionsMismatch => "模型返回维度与当前设置不一致",
+            Self::ProjectDocumentNotFound => "项目文档不存在",
+            Self::ProjectDocumentTypeInvalid => {
+                "文档类型必须是以下之一：CONTEXT / DECISIONS / CURRENT_STATUS / PROBLEMS / CHANGELOG"
+            }
+            Self::ProjectDocumentVersionRequired => "更新项目文档必须携带当前版本号",
+            Self::ProjectDocumentVersionConflict => "项目文档已被其他操作修改，请刷新后重试",
+            Self::ProjectDocumentAlreadyActive => "正式项目文档已存在，不能创建初始化草稿",
+            Self::ProjectDocumentDraftExists => "初始化草稿已存在，将返回现有草稿",
+            Self::ProjectDocumentDraftIncomplete => "必须一次提交全部五份初始化草稿",
+            Self::ProjectDocumentFormatInvalid => "项目文档 YAML 头或正文格式无效",
+            Self::ProjectDocumentWorkspaceUnbound => "工作空间未绑定项目，无法启用项目文档",
+            Self::ProjectDocumentPromotionIncomplete => "草稿晋升未完成，请执行恢复后重试",
+            Self::ConclusionCardFieldRequired => {
+                "结论卡片缺少必填字段（问题描述 / 最终结论 / 根本原因 / 证据 / 已验证结果）"
+            }
+            Self::ConclusionCardNotFound => "结论卡片不存在",
         }
     }
 }
@@ -560,7 +628,7 @@ mod tests {
             (
                 ErrorCode::McpToolListInvalid,
                 "MCP_TOOL_LIST_INVALID",
-                "MCP 工具清单与固定的 16 个工具不一致",
+                "MCP 工具清单与固定的 21 个工具不一致",
             ),
             (
                 ErrorCode::McpProtocolError,

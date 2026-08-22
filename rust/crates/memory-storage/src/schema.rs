@@ -14,8 +14,8 @@ pub const PRIMARY_FILE_NAME: &str = "memory.db";
 /// 桌面回退数据库文件名（与 C# `DesktopFileName` 一致）。
 pub const DESKTOP_FILE_NAME: &str = "desktop-memory.db";
 
-/// 当前兼容的结构版本（v8：mcp_token 增加最近记忆活动字段）。
-pub const SUPPORTED_SCHEMA_VERSION: i64 = 8;
+/// 当前兼容的结构版本（v10：项目文档本地全文索引与独立向量索引）。
+pub const SUPPORTED_SCHEMA_VERSION: i64 = 10;
 
 fn incompatible() -> BusinessError {
     BusinessError::new(ErrorCode::DatabaseIncompatible)

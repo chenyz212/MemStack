@@ -1,0 +1,1398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MemStack 知识图谱 V2</title>
+<style>
+:root {
+  --surface: #F7F7F8;
+  --surface-muted: #EFEFF2;
+  --surface-elevated: #FFFFFF;
+  --text: #171717;
+  --text-muted: #52525B;
+  --text-subtle: #8E8E93;
+  --border: rgba(23,23,23,0.12);
+  --border-light: rgba(23,23,23,0.06);
+  --brand: #4B3FE3;
+  --brand-soft: #F2F7FF;
+  --brand-text: #1A1759;
+  --accent: #2563EB;
+  --success: #22C55E;
+  --warning: #F59E0B;
+  --danger: #EF4444;
+  --font-sans: -apple-system, "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sidebar-w: 220px;
+  --topbar-h: 56px;
+  --tools-h: 44px;
+  --panel-w: 280px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.06);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.08);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--surface);
+  color: var(--text);
+  height: 100vh;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ========== App Layout ========== */
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-rows: var(--topbar-h) 1fr var(--tools-h);
+  grid-template-areas:
+    "topbar topbar"
+    "sidebar main"
+    "sidebar tools";
+  height: 100vh;
+  width: 100vw;
+}
+
+/* ========== Top Bar ========== */
+.topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  background: var(--surface-elevated);
+  border-bottom: 1px solid var(--border);
+  z-index: 10;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.brand-icon {
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--brand) 0%, #7B6FE8 100%);
+  display: flex; align-items: center; justify-content: center;
+  color: white; font-size: 14px;
+  box-shadow: 0 2px 8px rgba(75,63,227,0.3);
+}
+.brand-name { font-size: 14px; font-weight: 600; color: var(--text); }
+
+.scope-tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--surface-muted);
+  padding: 3px;
+  border-radius: 8px;
+}
+.scope-tab {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-muted);
+  border: none;
+  background: transparent;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.scope-tab:hover { color: var(--text); }
+.scope-tab.active {
+  background: var(--surface-elevated);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.scope-tab .dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--brand);
+}
+.scope-tab .ring {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--brand);
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.search-input {
+  width: 320px;
+  height: 34px;
+  padding: 0 14px 0 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  font-size: 13px;
+  color: var(--text);
+  outline: none;
+  transition: all 0.15s;
+  font-family: var(--font-sans);
+}
+.search-input:focus {
+  background: var(--surface-elevated);
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(75,63,227,0.1);
+}
+.search-wrapper { position: relative; }
+.search-wrapper::before {
+  content: '⌕';
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-subtle);
+  font-size: 14px;
+}
+.search-wrapper kbd {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  color: var(--text-subtle);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+}
+
+.icon-btn {
+  width: 34px; height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted);
+  transition: all 0.15s;
+  font-size: 14px;
+}
+.icon-btn:hover {
+  background: var(--brand-soft);
+  color: var(--brand);
+  border-color: var(--brand);
+}
+
+/* ========== Left Sidebar ========== */
+.sidebar {
+  grid-area: sidebar;
+  background: var(--surface-elevated);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-light);
+}
+.sidebar-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 10px;
+}
+
+.project-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+.project-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.12s;
+  font-size: 13px;
+}
+.project-item:hover { background: var(--surface-muted); }
+.project-item.active { background: var(--brand-soft); }
+.project-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.project-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+.project-count {
+  font-size: 11px;
+  color: var(--text-subtle);
+  font-family: var(--font-mono);
+}
+
+.sidebar-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-light);
+}
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.status-pill .dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+/* ========== Main Canvas Area ========== */
+.main {
+  grid-area: main;
+  position: relative;
+  background: var(--surface-muted);
+  overflow: hidden;
+}
+
+.canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: default;
+}
+.canvas.dragging { cursor: grabbing; }
+
+.label-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.label-item {
+  position: absolute;
+  font-size: 10px;
+  font-weight: 500;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  white-space: nowrap;
+  box-shadow: var(--shadow-sm);
+  color: var(--text);
+  transform: translate(-50%, -100%);
+  pointer-events: none;
+}
+
+/* ========== Right Panel ========== */
+.right-panel {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: var(--panel-w);
+  max-height: calc(100% - 32px);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-light);
+}
+.panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.panel-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  color: var(--text-subtle);
+  font-size: 14px;
+}
+.panel-body {
+  padding: 4px 0;
+  overflow-y: auto;
+}
+
+.panel-section {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-light);
+}
+.panel-section:last-child { border-bottom: none; }
+.panel-section > header {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 10px;
+}
+
+.panel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.panel-row:last-child { margin-bottom: 0; }
+.panel-row input[type="checkbox"] {
+  accent-color: var(--brand);
+  width: 14px; height: 14px;
+}
+
+.slider-row { gap: 8px; }
+.slider-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.slider-wrap input[type="range"] {
+  width: 120px;
+  accent-color: var(--brand);
+}
+.slider-wrap output {
+  min-width: 36px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+}
+
+.chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.12s;
+  font-family: var(--font-sans);
+}
+.chip:hover { border-color: var(--brand); color: var(--brand); }
+.chip.active {
+  border-color: var(--chip-color, var(--brand));
+  background: color-mix(in srgb, var(--chip-color, var(--brand)) 12%, transparent);
+  color: var(--text);
+}
+.chip .dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--chip-color, var(--brand));
+}
+.chip-all {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-bottom: 6px;
+}
+.chip-all.active {
+  background: var(--brand);
+  color: white;
+  border-color: var(--brand);
+}
+
+.segmented {
+  display: flex;
+  background: var(--surface-muted);
+  padding: 3px;
+  border-radius: 8px;
+}
+.segmented button {
+  flex: 1;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.segmented button.active {
+  background: var(--surface-elevated);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+}
+
+.legend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.legend-list span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.legend-list i {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.help-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-subtle);
+}
+
+/* ========== Node Detail Card ========== */
+.detail-card {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  width: 300px;
+  max-height: calc(100% - 32px);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.detail-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  width: 24px; height: 24px;
+  border: none;
+  background: none;
+  color: var(--text-subtle);
+  cursor: pointer;
+  font-size: 16px;
+  border-radius: 50%;
+}
+.detail-close:hover { background: var(--surface-muted); color: var(--text); }
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 14px 0;
+}
+.memory-type-chip {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--chip-hue, var(--brand)) 10%, transparent);
+  color: var(--chip-hue, var(--brand));
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.importance-pips {
+  display: flex;
+  gap: 2px;
+}
+.importance-pips i {
+  width: 14px; height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.importance-pips i:nth-child(-n+4) { background: var(--brand); }
+
+.detail-title {
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 14px 6px;
+  line-height: 1.4;
+  color: var(--text);
+}
+.detail-summary {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 0 14px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.detail-meta {
+  padding: 10px 14px 0;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.meta-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 3px 8px;
+  background: var(--surface-muted);
+  border-radius: 999px;
+}
+.meta-pill i {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+}
+.detail-tags {
+  padding: 8px 14px 0;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.detail-tags span {
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--brand-soft);
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+.open-btn {
+  margin: 12px 14px 0;
+  padding: 8px 14px;
+  background: var(--brand);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s;
+  font-family: var(--font-sans);
+}
+.open-btn:hover { background: #3D32C7; }
+
+.detail-foot {
+  margin-top: 12px;
+  border-top: 1px solid var(--border-light);
+  padding: 10px 14px 14px;
+}
+.detail-foot header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--text-subtle);
+}
+.detail-foot header b { color: var(--text); }
+
+.neighbor-list { list-style: none; }
+.neighbor-list li { margin-bottom: 2px; }
+.neighbor-list button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+  font-family: var(--font-sans);
+}
+.neighbor-list button:hover { background: var(--surface-muted); }
+.neighbor-list button i {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.neighbor-list button strong {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.neighbor-list button small {
+  font-size: 10px;
+  color: var(--text-subtle);
+}
+
+/* ========== Bottom Tools ========== */
+.tools {
+  grid-area: tools;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  background: var(--surface-elevated);
+  border-top: 1px solid var(--border);
+}
+.tools-left, .tools-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tool-btn {
+  width: 30px; height: 30px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  transition: all 0.12s;
+}
+.tool-btn:hover {
+  background: var(--brand-soft);
+  color: var(--brand);
+  border-color: var(--brand);
+}
+.tool-info {
+  font-size: 11px;
+  color: var(--text-subtle);
+  font-family: var(--font-mono);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tool-info .dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--success);
+}
+.rebuild-btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.12s;
+  font-family: var(--font-sans);
+}
+.rebuild-btn:hover {
+  background: var(--brand-soft);
+  color: var(--brand);
+  border-color: var(--brand);
+}
+
+/* ========== Overlays ========== */
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(247,247,248,0.92);
+  backdrop-filter: blur(4px);
+  z-index: 50;
+  gap: 12px;
+  text-align: center;
+}
+.overlay-spinner {
+  width: 32px; height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.overlay p { font-size: 13px; color: var(--text-muted); }
+.overlay-icon {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  color: var(--danger);
+  font-weight: 600;
+}
+.overlay h4 { font-size: 15px; color: var(--text); }
+.overlay .ghost-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  margin: 0 4px;
+  font-family: var(--font-sans);
+}
+.overlay .ghost-btn:hover { border-color: var(--brand); color: var(--brand); }
+.overlay .ghost-btn.accent {
+  background: var(--brand);
+  color: white;
+  border-color: var(--brand);
+}
+.overlay .ghost-btn.accent:hover { background: #3D32C7; }
+.overlay-actions { margin-top: 8px; }
+
+.building-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+  margin: 0 6px;
+  animation: pulse 1.5s infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+.search-related-btn {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  padding: 8px 16px;
+  background: var(--brand);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(75,63,227,0.25);
+  transition: all 0.15s;
+  font-family: var(--font-sans);
+}
+.search-related-btn:hover {
+  background: #3D32C7;
+  transform: translateY(-1px);
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Top Bar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="brand">
+        <div class="brand-icon">🧠</div>
+        <div class="brand-name">MemStack</div>
+      </div>
+      <nav class="scope-tabs">
+        <button class="scope-tab active">
+          <span class="dot"></span>全局
+        </button>
+        <button class="scope-tab">
+          <span class="ring"></span>局部
+        </button>
+      </nav>
+    </div>
+    <div class="topbar-right">
+      <div class="search-wrapper">
+        <input type="text" class="search-input" placeholder="搜索记忆标题..." />
+        <kbd>⌘F</kbd>
+      </div>
+      <button class="icon-btn" title="刷新">⟳</button>
+      <button class="icon-btn" title="设置">⚙</button>
+    </div>
+  </header>
+
+  <!-- Left Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-title">项目列表</div>
+    </div>
+    <div class="project-list" id="projectList"></div>
+    <div class="sidebar-footer">
+      <div class="status-pill">
+        <span class="dot"></span>
+        <span>已连接 · 300 节点</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Canvas -->
+  <main class="main">
+    <canvas class="canvas" id="graph" width="1440" height="880"></canvas>
+    <div class="label-layer" id="labelLayer"></div>
+
+    <!-- Right Control Panel -->
+    <aside class="right-panel">
+      <div class="panel-head">
+        <div class="panel-title">控制</div>
+        <button class="panel-toggle">−</button>
+      </div>
+      <div class="panel-body">
+        <!-- Display Section -->
+        <section class="panel-section">
+          <header>显示</header>
+          <label class="panel-row">
+            <span>节点标签</span>
+            <input type="checkbox" checked />
+          </label>
+          <label class="panel-row">
+            <span>关系分数</span>
+            <input type="checkbox" />
+          </label>
+        </section>
+
+        <!-- Filter Section -->
+        <section class="panel-section">
+          <header>筛选</header>
+          <div style="font-size:11px;color:var(--text-subtle);margin-bottom:6px;">项目</div>
+          <button class="chip-all active">全部</button>
+          <div class="chip-grid" id="chipGrid"></div>
+        </section>
+
+        <!-- Relationship Section -->
+        <section class="panel-section">
+          <header>关系</header>
+          <div class="panel-row slider-row">
+            <span>最低强度</span>
+            <div class="slider-wrap">
+              <input type="range" min="10" max="90" value="30" />
+              <output>30%</output>
+            </div>
+          </div>
+          <div class="panel-row slider-row">
+            <span>连线粗细</span>
+            <div class="slider-wrap">
+              <input type="range" min="0.3" max="2.5" step="0.1" value="1" />
+              <output>1.0×</output>
+            </div>
+          </div>
+          <div class="panel-row slider-row">
+            <span>节点大小</span>
+            <div class="slider-wrap">
+              <input type="range" min="0.5" max="2" step="0.1" value="1" />
+              <output>1.0×</output>
+            </div>
+          </div>
+        </section>
+
+        <!-- Time Range -->
+        <section class="panel-section">
+          <header>时间范围</header>
+          <div class="segmented">
+            <button class="active">不限</button>
+            <button>30 天</button>
+            <button>7 天</button>
+          </div>
+        </section>
+
+        <!-- Legend -->
+        <section class="panel-section">
+          <header>图例</header>
+          <div class="legend-list">
+            <span><i style="background:#4B3FE3"></i>MemStack 核心</span>
+            <span><i style="background:#2563EB"></i>AI 集成</span>
+            <span><i style="background:#D97706"></i>知识管理</span>
+            <span><i style="background:#9333EA"></i>前端 UI</span>
+            <span><i style="background:#7c5cb8"></i>个人记忆</span>
+          </div>
+        </section>
+
+        <!-- Help -->
+        <section class="panel-section">
+          <header>操作</header>
+          <div class="help-list">
+            <span>拖拽节点会带动邻接</span>
+            <span>双击节点打开记忆</span>
+            <span>滚轮缩放 · 空白平移</span>
+          </div>
+        </section>
+      </div>
+    </aside>
+
+    <!-- Node Detail Card -->
+    <article class="detail-card" id="detailCard">
+      <button class="detail-close">×</button>
+      <div class="detail-head">
+        <span class="memory-type-chip" style="--chip-hue:#2563EB">NOTE</span>
+        <span class="importance-pips"><i></i><i></i><i></i><i></i><i></i></span>
+      </div>
+      <h3 class="detail-title">向量嵌入模型选择与性能优化方案</h3>
+      <p class="detail-summary">针对不同场景选择合适的嵌入模型，结合缓存和批量处理策略，提升向量检索的整体性能和准确性...</p>
+      <div class="detail-meta">
+        <span class="meta-pill"><i style="background:#2563EB"></i>AI 集成</span>
+      </div>
+      <div class="detail-tags">
+        <span>#向量</span>
+        <span>#嵌入</span>
+        <span>#性能</span>
+      </div>
+      <button class="open-btn">打开完整记忆</button>
+      <footer class="detail-foot">
+        <header>
+          <span>关联记忆</span>
+          <b>5</b>
+        </header>
+        <ul class="neighbor-list">
+          <li><button><i style="background:#2563EB"></i><div><strong>FTS5 索引优化策略</strong><small>语义 · 85%</small></div></button></li>
+          <li><button><i style="background:#D97706"></i><div><strong>SQLite 事务批量处理</strong><small>语义 · 72%</small></div></button></li>
+          <li><button><i style="background:#4B3FE3"></i><div><strong>语义搜索排序重评分</strong><small>语义 · 68%</small></div></button></li>
+          <li><button><i style="background:#2563EB"></i><div><strong>嵌入模型对比分析</strong><small>语义 · 61%</small></div></button></li>
+          <li><button><i style="background:#9333EA"></i><div><strong>余弦相似度计算优化</strong><small>语义 · 55%</small></div></button></li>
+        </ul>
+      </footer>
+    </article>
+
+    <!-- Search Related Button -->
+    <button class="search-related-btn">⌕ 搜索相关</button>
+  </main>
+
+  <!-- Bottom Tools -->
+  <footer class="tools">
+    <div class="tools-left">
+      <button class="tool-btn" title="放大">＋</button>
+      <button class="tool-btn" title="缩小">−</button>
+      <button class="tool-btn" title="适应窗口">⌗</button>
+    </div>
+    <div class="tool-info">
+      <span class="dot"></span>
+      <span>300 节点 · 412 关系</span>
+      <span>|</span>
+      <span>FPS: 60</span>
+    </div>
+    <div class="tools-right">
+      <button class="rebuild-btn">重建关系</button>
+    </div>
+  </footer>
+</div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('graph');
+  const ctx = canvas.getContext('2d');
+  const labelLayer = document.getElementById('labelLayer');
+
+  const CW = 1440, CH = 880;
+  canvas.width = CW; canvas.height = CH;
+
+  const W = 720, H = 440;
+  const sx = CW / W, sy = CH / H;
+
+  const COLORS = {
+    A: '#4B3FE3', B: '#2563EB', C: '#D97706', D: '#9333EA'
+  };
+
+  const GROUPS = [
+    { id:'A', name:'MemStack 核心', color: COLORS.A, cx:180, cy:120 },
+    { id:'B', name:'AI 集成', color: COLORS.B, cx:540, cy:120 },
+    { id:'C', name:'知识管理', color: COLORS.C, cx:180, cy:340 },
+    { id:'D', name:'前端 UI', color: COLORS.D, cx:540, cy:340 },
+  ];
+
+  const PROJECT_NAMES = ['MemStack 核心', 'AI 集成', '知识管理', '前端 UI'];
+  const PROJECT_COLORS = ['#4B3FE3', '#2563EB', '#D97706', '#9333EA'];
+
+  // Build project list
+  const projectList = document.getElementById('projectList');
+  const countMap = [87, 76, 82, 55];
+  PROJECT_NAMES.forEach((name, i) => {
+    const el = document.createElement('div');
+    el.className = 'project-item' + (i === 0 ? ' active' : '');
+    el.innerHTML = `
+      <div class="project-dot" style="background:${PROJECT_COLORS[i]}"></div>
+      <div class="project-name">${name}</div>
+      <div class="project-count">${countMap[i]}</div>
+    `;
+    el.addEventListener('click', () => {
+      document.querySelectorAll('.project-item').forEach(p => p.classList.remove('active'));
+      el.classList.add('active');
+    });
+    projectList.appendChild(el);
+  });
+
+  // Build chip grid
+  const chipGrid = document.getElementById('chipGrid');
+  PROJECT_NAMES.forEach((name, i) => {
+    const chip = document.createElement('button');
+    chip.className = 'chip active';
+    chip.style.setProperty('--chip-color', PROJECT_COLORS[i]);
+    chip.innerHTML = `<span class="dot"></span>${name}`;
+    chip.addEventListener('click', () => chip.classList.toggle('active'));
+    chipGrid.appendChild(chip);
+  });
+
+  // Generate graph data
+  const POOL = [
+    '向量嵌入','FTS5','SQLite事务','DPAPI加密','Token权限','ForceAtlas布局','候选审批','类型体系',
+    '文档五件套','MCP stdio','后台队列','客户端注册','系统托盘','单实例锁','窗口持久化','Vue响应式',
+    'Canvas优化','TS类型系统','Obsidian美学','Tauri打包','Rust异步','语义算法','Jaccard相似度',
+    '余弦相似度','图谱可视化','Louvain聚类','深色主题','玻璃态','快捷键','国际化',
+    '错误处理','日志轮转','健康检查','数据库迁移','版本语义化','API兼容','缓存策略','工作空间绑定',
+    '项目作用域','双作用域','云端同步','离线优先','冲突合并','结论卡片','根因分析','证据链',
+    '图谱重建','后台Worker','删除级联','归档策略','恢复逻辑','版本对比','导出JSON','便携版',
+    'Win兼容','Linux支持','macOS适配','托盘菜单','系统通知','自动更新','配置向导','主题切换',
+    '字体渲染','动效曲线','滚动性能','内存优化','FTS5索引','向量数据库','嵌入模型',
+    '语义搜索','关键词匹配','混合检索','排序重评分','相关性调优','查询扩展','分词策略',
+    '中文分词','停用词过滤','同义词扩展','实体识别','关系抽取','知识融合',
+    '分类体系','标签管理','元数据标准','数据字典','Schema设计','迁移策略',
+    '并发控制','事务隔离','锁机制','连接池','负载均衡','容灾备份','主从复制',
+    '读写分离','分库分表','数据分片','冷热分离','归档压缩','增量同步','全量同步','冲突解决',
+    '乐观锁','悲观锁','版本控制','变更追踪','审计日志','权限模型','角色管理','访问控制',
+    '安全审计','漏洞扫描','加密传输','数据脱敏','隐私保护','合规检查',
+    'API网关','服务注册','服务发现','配置中心','链路追踪','指标监控','告警系统','日志聚合',
+    '消息队列','事件驱动','CQRS','DDD','六边形架构','微服务','单体拆分',
+    '领域事件','Saga模式','Outbox模式','CQRS读写模型','聚合根','实体','值对象','领域服务',
+    '仓储模式','工作单元','规格模式','事件溯源','快照','回放','版本化','时间旅行',
+  ];
+
+  const N = 300;
+  const nodes = new Array(N);
+  const edges = [];
+
+  for (let i = 0; i < N; i++) {
+    const g = GROUPS[i % GROUPS.length];
+    const clusterIdx = Math.floor(i / GROUPS.length);
+    const angle = Math.random() * Math.PI * 2;
+    const r = 30 + clusterIdx * 6 + Math.random()*12;
+    nodes[i] = {
+      id: i, name: POOL[i % POOL.length],
+      group: g,
+      x: g.cx + Math.cos(angle)*r,
+      y: g.cy + Math.sin(angle)*r,
+      vx: 0, vy: 0,
+      fx: 0, fy: 0,
+      r: 2 + Math.random()*1.5,
+      color: g.color
+    };
+  }
+
+  for (let i = 0; i < N; i++) {
+    const n = nodes[i];
+    for (let c = 0; c < 2; c++) {
+      const j = Math.floor(Math.random()*N);
+      if (j !== i && nodes[j].group.id === n.group.id) {
+        edges.push({ s: i, t: j, w: 0.7+Math.random()*0.6, o: 0.15+Math.random()*0.2 });
+      }
+    }
+    if (Math.random() < 0.25) {
+      const j = Math.floor(Math.random()*N);
+      if (j !== i && nodes[j].group.id !== n.group.id) {
+        edges.push({ s: i, t: j, w: 0.3+Math.random()*0.3, o: 0.05+Math.random()*0.08 });
+      }
+    }
+  }
+
+  const seen = new Set();
+  const clean = [];
+  for (const e of edges) {
+    const a = Math.min(e.s, e.t), b = Math.max(e.s, e.t);
+    const k = a*1000 + b;
+    if (!seen.has(k)) { seen.add(k); clean.push({...e, s:a, t:b}); }
+  }
+  edges.length = 0;
+  edges.push(...clean);
+
+  // Physics - simple stable force-directed
+  const CELL = 60;
+  const gridCols = Math.ceil(W / CELL);
+  const gridRows = Math.ceil(H / CELL);
+  let grid = new Array(gridCols * gridRows);
+  let hoverId = -1;
+  let selectedId = 3;
+  let dragging = null;
+  let running = true;
+  let neighborsSet = null;
+  const DAMP = 0.82;
+
+  function buildGrid() {
+    grid = new Array(gridCols * gridRows);
+    for (let i = 0; i < N; i++) {
+      const n = nodes[i];
+      const cx = Math.max(0, Math.min(gridCols-1, Math.floor(n.x / CELL)));
+      const cy = Math.max(0, Math.min(gridRows-1, Math.floor(n.y / CELL)));
+      const idx = cy * gridCols + cx;
+      if (!grid[idx]) grid[idx] = [];
+      grid[idx].push(i);
+    }
+  }
+
+  function simulate() {
+    if (!running) return;
+    buildGrid();
+
+    // Reset forces
+    for (let i = 0; i < N; i++) {
+      nodes[i].fx = 0;
+      nodes[i].fy = 0;
+    }
+
+    // Repulsion
+    for (let i = 0; i < N; i++) {
+      const a = nodes[i];
+      const cx = Math.max(0, Math.min(gridCols-1, Math.floor(a.x / CELL)));
+      const cy = Math.max(0, Math.min(gridRows-1, Math.floor(a.y / CELL)));
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const gx = cx+dx, gy = cy+dy;
+          if (gx<0||gy<0||gx>=gridCols||gy>=gridRows) continue;
+          const cell = grid[gy*gridCols+gx];
+          if (!cell) continue;
+          for (let k = 0; k < cell.length; k++) {
+            const j = cell[k];
+            if (j <= i) continue;
+            const b = nodes[j];
+            const ex = b.x - a.x, ey = b.y - a.y;
+            const d2 = ex*ex + ey*ey + 8;
+            const d = Math.sqrt(d2);
+            const f = 35 / d2;
+            a.fx -= ex / d * f;
+            a.fy -= ey / d * f;
+            b.fx += ex / d * f;
+            b.fy += ey / d * f;
+          }
+        }
+      }
+    }
+
+    // Spring forces
+    for (let k = 0; k < edges.length; k++) {
+      const e = edges[k];
+      const a = nodes[e.s], b = nodes[e.t];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.max(3, Math.hypot(dx, dy));
+      const rest = 50 / e.w;
+      const diff = d - rest;
+      const kk = 0.01 * e.w;
+      const fx = (dx / d) * diff * kk;
+      const fy = (dy / d) * diff * kk;
+      a.fx += fx; a.fy += fy;
+      b.fx -= fx; b.fy -= fy;
+    }
+
+    // Integrate
+    const gcx = W / 2, gcy = H / 2;
+    for (let i = 0; i < N; i++) {
+      const n = nodes[i];
+      if (n === dragging) { n.vx = 0; n.vy = 0; continue; }
+
+      n.fx += (gcx - n.x) * 0.003;
+      n.fy += (gcy - n.y) * 0.003;
+
+      n.vx = (n.vx + n.fx) * DAMP;
+      n.vy = (n.vy + n.fy) * DAMP;
+
+      n.x += n.vx;
+      n.y += n.vy;
+
+      // Boundary
+      const pad = 5;
+      if (n.x < pad) { n.x = pad; n.vx = 0; }
+      if (n.x > W - pad) { n.x = W - pad; n.vx = 0; }
+      if (n.y < pad) { n.y = pad; n.vy = 0; }
+      if (n.y > H - pad) { n.y = H - pad; n.vy = 0; }
+    }
+  }
+
+  function getNeighbors(id) {
+    const nb = new Set([id]);
+    for (const e of edges) {
+      if (e.s === id) nb.add(e.t);
+      else if (e.t === id) nb.add(e.s);
+    }
+    return nb;
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, CW, CH);
+    const focusId = hoverId >= 0 ? hoverId : (selectedId >= 0 ? selectedId : -1);
+    const hasFocus = focusId >= 0;
+    if (hasFocus) neighborsSet = getNeighbors(focusId);
+
+    ctx.lineCap = 'round';
+    for (let k = 0; k < edges.length; k++) {
+      const e = edges[k];
+      const a = nodes[e.s], b = nodes[e.t];
+      if (!a || !b) continue;
+      let alpha = e.o;
+      let width = e.w;
+      if (hasFocus) {
+        const isC = e.s === focusId || e.t === focusId;
+        if (isC) { alpha = Math.min(0.9, e.o * 3); width *= 1.8; }
+        else { alpha = 0.02; }
+      }
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = a.color;
+      ctx.lineWidth = width * sx * 0.5;
+      ctx.beginPath();
+      ctx.moveTo(a.x * sx, a.y * sy);
+      ctx.lineTo(b.x * sx, b.y * sy);
+      ctx.stroke();
+    }
+
+    for (let i = 0; i < N; i++) {
+      const n = nodes[i];
+      let alpha = 0.85;
+      let r = n.r;
+      if (hasFocus) {
+        const isNb = neighborsSet.has(i);
+        alpha = isNb ? 1 : 0.25;
+        if (i === focusId) r *= 1.6;
+        else if (isNb) r *= 1.1;
+      }
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = n.color;
+      ctx.beginPath();
+      ctx.arc(n.x * sx, n.y * sy, r * sx, 0, Math.PI * 2);
+      ctx.fill();
+      if (hasFocus && i === focusId) {
+        ctx.globalAlpha = 0.6;
+        ctx.strokeStyle = n.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(n.x * sx, n.y * sy, (r + 3) * sx, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // HTML labels for neighbors
+    labelLayer.innerHTML = '';
+    if (hasFocus) {
+      for (let i = 0; i < N; i++) {
+        if (neighborsSet.has(i)) {
+          const n = nodes[i];
+          const el = document.createElement('div');
+          el.className = 'label-item';
+          el.textContent = n.name;
+          const rect = canvas.getBoundingClientRect();
+          const px = (n.x / W) * rect.width;
+          const py = (n.y / H) * rect.height - n.r * 2 - 4;
+          el.style.left = px + 'px';
+          el.style.top = py + 'px';
+          labelLayer.appendChild(el);
+        }
+      }
+    }
+  }
+
+  function loop() {
+    if (running) simulate();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  function getCanvasPos(evt) {
+    const rect = canvas.getBoundingClientRect();
+    const x = (evt.clientX - rect.left) / rect.width * W;
+    const y = (evt.clientY - rect.top) / rect.height * H;
+    return { x, y };
+  }
+
+  function hitTest(x, y) {
+    for (let i = N - 1; i >= 0; i--) {
+      const n = nodes[i];
+      const dx = n.x - x, dy = n.y - y;
+      if (dx*dx + dy*dy < (n.r+3)*(n.r+3)) return i;
+    }
+    return -1;
+  }
+
+  canvas.addEventListener('mousedown', e => {
+    const pos = getCanvasPos(e);
+    const idx = hitTest(pos.x, pos.y);
+    if (idx >= 0) {
+      dragging = nodes[idx];
+      canvas.classList.add('dragging');
+    }
+  });
+
+  document.addEventListener('mousemove', e => {
+    const pos = getCanvasPos(e);
+    if (dragging) {
+      dragging.x = pos.x; dragging.y = pos.y;
+      dragging.vx = 0; dragging.vy = 0;
+      return;
+    }
+    const idx = hitTest(pos.x, pos.y);
+    if (idx !== hoverId) {
+      hoverId = idx;
+      canvas.style.cursor = idx >= 0 ? 'pointer' : 'default';
+    }
+  });
+
+  document.addEventListener('mouseup', e => {
+    if (dragging) {
+      canvas.classList.remove('dragging');
+      dragging = null;
+    } else {
+      const pos = getCanvasPos(e);
+      const idx = hitTest(pos.x, pos.y);
+      if (idx >= 0) selectedId = idx;
+      else selectedId = -1;
+    }
+  });
+
+  // Panel toggle
+  document.querySelector('.panel-toggle').addEventListener('click', (e) => {
+    const body = document.querySelector('.panel-body');
+    const btn = e.target;
+    if (body.style.display === 'none') {
+      body.style.display = 'block';
+      btn.textContent = '−';
+    } else {
+      body.style.display = 'none';
+      btn.textContent = '+';
+    }
+  });
+
+  // Detail card close
+  document.querySelector('.detail-close').addEventListener('click', () => {
+    document.getElementById('detailCard').style.display = 'none';
+  });
+
+  // Scope tabs
+  document.querySelectorAll('.scope-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.scope-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+    });
+  });
+
+  loop();
+})();
+</script>
+</body>
+</html>

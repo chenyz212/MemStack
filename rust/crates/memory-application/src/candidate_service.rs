@@ -100,6 +100,58 @@ impl MemoryCandidateService {
         get_candidate(&connection, &id)
     }
 
+    /// 原子提交结论卡片候选：普通候选字段与结构化载荷在同一条语句中落库。
+    pub(crate) fn submit_conclusion(
+        &self,
+        request: &SaveMemoryCandidateRequest,
+        source_name: &str,
+        structured_payload_json: &str,
+    ) -> Result<MemoryCandidateItem, BusinessError> {
+        validate_candidate(request, false)?;
+        let id = self.ids.new_id();
+        let now_text = format_storage_time(self.clock.now_utc());
+        let connection = self.database.open()?;
+        let result = connection.execute(
+            "INSERT INTO memory_candidate( \
+                 id,scope,project_id,title,summary,content,status,created_at,updated_at, \
+                 memory_type,keywords_json,tags_json,importance,cloud_processing_allowed, \
+                 content_checksum,source_name,version,structured_payload_json) \
+             VALUES( \
+                 $id,$scope,$project_id,$title,$summary,$content,'PENDING',$created_at,$updated_at, \
+                 $memory_type,$keywords_json,$tags_json,$importance,$cloud_processing_allowed, \
+                 $checksum,$source_name,1,$structured_payload_json);",
+            params![
+                id,
+                request.scope.as_scope_text(),
+                request.project_id,
+                request.title.trim(),
+                request.summary.trim(),
+                request.content.trim(),
+                now_text,
+                now_text,
+                request.memory_type.trim(),
+                serialize_string_list_csharp(&normalize_candidate_list(&request.keywords)),
+                serialize_string_list_csharp(&normalize_candidate_list(&request.tags)),
+                request.importance,
+                request.cloud_processing_allowed as i64,
+                content_checksum(&request.content),
+                source_name.trim(),
+                structured_payload_json,
+            ],
+        );
+        match result {
+            Ok(_) => {}
+            Err(error) => {
+                return if unique_constraint_error(&error).is_some() {
+                    Err(BusinessError::new(ErrorCode::MemoryCandidateDuplicate))
+                } else {
+                    Err(map_sqlite_error(error))
+                };
+            }
+        }
+        get_candidate(&connection, &id)
+    }
+
     /// 按可信 Token 范围列出待确认候选。
     pub fn list(&self, caller: &McpCallerContext) -> Result<Vec<MemoryCandidateItem>, BusinessError> {
         let connection = self.database.open()?;
@@ -156,7 +208,54 @@ impl MemoryCandidateService {
         get_candidate(&connection, id)
     }
 
+    /// 原子更新结论卡片候选：业务字段、结构化载荷与版本号保持一致。
+    pub(crate) fn update_conclusion(
+        &self,
+        id: &str,
+        request: &SaveMemoryCandidateRequest,
+        structured_payload_json: &str,
+    ) -> Result<MemoryCandidateItem, BusinessError> {
+        validate_candidate(request, true)?;
+        let now_text = format_storage_time(self.clock.now_utc());
+        let connection = self.database.open()?;
+        let current = get_candidate(&connection, id)?;
+        let changed = connection
+            .execute(
+                "UPDATE memory_candidate \
+                 SET scope=$scope,project_id=$project_id,title=$title,summary=$summary,content=$content, \
+                     memory_type=$memory_type,keywords_json=$keywords_json,tags_json=$tags_json, \
+                     importance=$importance,cloud_processing_allowed=$cloud_processing_allowed, \
+                     content_checksum=$checksum,structured_payload_json=$structured_payload_json, \
+                     version=version+1,updated_at=$updated_at \
+                 WHERE id=$id AND status='PENDING' AND version=$expected_version;",
+                params![
+                    request.scope.as_scope_text(),
+                    request.project_id,
+                    request.title.trim(),
+                    request.summary.trim(),
+                    request.content.trim(),
+                    request.memory_type.trim(),
+                    serde_json::to_string(&normalize_candidate_list(&request.keywords)).unwrap(),
+                    serde_json::to_string(&normalize_candidate_list(&request.tags)).unwrap(),
+                    request.importance,
+                    request.cloud_processing_allowed as i64,
+                    content_checksum(&request.content),
+                    structured_payload_json,
+                    now_text,
+                    id,
+                    request.expected_version.unwrap_or(current.version),
+                ],
+            )
+            .map_err(map_sqlite_error)?;
+        if changed == 0 {
+            return Err(BusinessError::new(ErrorCode::MemoryCandidateVersionConflict));
+        }
+        get_candidate(&connection, id)
+    }
+
     /// 确认候选并生成正式记忆；重复冲突时保留候选（事务回滚）。
+    ///
+    /// 结论卡片候选（structured_payload_json 非空）在同一事务内写入 conclusion_card 扩展。
     pub fn confirm(
         &self,
         id: &str,
@@ -170,6 +269,7 @@ impl MemoryCandidateService {
         if candidate.version != expected_version {
             return Err(BusinessError::new(ErrorCode::MemoryCandidateVersionConflict));
         }
+        let conclusion_payload = read_conclusion_payload(&connection, id)?;
         let save_request = memory_domain::SaveMemoryRequest {
             scope: candidate.scope,
             project_id: candidate.project_id.clone(),
@@ -185,8 +285,13 @@ impl MemoryCandidateService {
             cloud_processing_allowed: candidate.cloud_processing_allowed,
             expected_version: None,
         };
-        self.memories
-            .confirm_candidate(id, expected_version, &save_request, &candidate.source_name)
+        self.memories.confirm_candidate(
+            id,
+            expected_version,
+            &save_request,
+            &candidate.source_name,
+            conclusion_payload.as_ref(),
+        )
     }
 
     /// 使用乐观锁拒绝并删除候选。
@@ -223,6 +328,30 @@ pub(crate) fn get_candidate(connection: &Connection, id: &str) -> Result<MemoryC
             rusqlite::Error::QueryReturnedNoRows => BusinessError::new(ErrorCode::MemoryCandidateNotFound),
             other => map_sqlite_error(other),
         })
+}
+
+/// 读取候选上挂载的结论卡片结构化数据（普通候选返回 None）。
+pub(crate) fn read_conclusion_payload(
+    connection: &Connection,
+    id: &str,
+) -> Result<Option<memory_domain::ConclusionCardPayload>, BusinessError> {
+    let raw: Option<String> = connection
+        .query_row(
+            "SELECT structured_payload_json FROM memory_candidate WHERE id=$id;",
+            params![id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+        .map_err(map_sqlite_error)?;
+    let Some(raw) = raw.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    serde_json::from_str(&raw).map(Some).map_err(|error| {
+        BusinessError::with_message(ErrorCode::InternalError, format!("结论卡片候选数据损坏：{error}"))
+    })
 }
 
 /// 校验候选业务字段和乐观锁参数（消息与 C# 逐字一致：均带「候选」前缀）。

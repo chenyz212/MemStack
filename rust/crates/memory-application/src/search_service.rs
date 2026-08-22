@@ -1,8 +1,14 @@
 //! 中文 FTS5 检索、解释与上下文裁剪（C# `SearchService` 等价实现）。
 //!
-//! - 关键词召回：`memory_fts MATCH` + `bm25(5.0,4.0,3.0,1.0)`，字段权重 5/4/3/1。
-//! - 语义召回：`memory_embedding.vector_blob` 点积排序取前 100（维度相等才参与）。
-//! - 融合：Weighted RRF（keyword 0.60/0.95、semantic 0.35、metadata 0.05、titleExact +1.0、k=60）。
+//! - 关键词召回：`memory_fts MATCH` + `bm25(1.0,5.0,4.0,3.0,1.0)`，字段权重
+//!   title/keyword/summary/content = 5/4/3/1（首列为 unindexed memory_id，权重不生效）。
+//! - 语义召回：`memory_embedding.vector_blob` 点积排序，仅保留相似度 ≥ 0.35 的候选
+//!   （维度相等才参与），取前 100；低相似噪声不再进入结果。
+//! - 排序：有效相似度降序——语义命中用余弦相似度（与卡片展示的匹配度同源，
+//!   百分比随位次单调不增）；纯关键词命中用伪相似度（标题全等 0.90 /
+//!   标题包含 0.75 / 其余 0.40）；同分依次按标题层级、关键词位次、
+//!   语义位次、图谱位次、插入序决胜。
+//! - 图谱扩展仅对已召回候选追加 GRAPH 原因与位次（作决胜项），不插入无关结果。
 //! - FTS 零候选时模糊回退：LIKE 固定分 0.1、reason `["FUZZY"]`。
 //! - 上下文：MMR（0.72 相关 − 0.28 多样）、字符二元组 Jaccard（≤500 对）、UTF-16 字符预算。
 
@@ -49,6 +55,7 @@ struct RankedCandidate {
     keyword_rank: Option<i64>,
     semantic_rank: Option<i64>,
     graph_rank: Option<i64>,
+    semantic_similarity: Option<f32>,
     reasons: Vec<String>,
 }
 
@@ -98,17 +105,19 @@ impl SearchService {
                     keyword_rank: Some(position as i64 + 1),
                     semantic_rank: None,
                     graph_rank: None,
+                    semantic_similarity: None,
                     reasons,
                 },
             );
         }
 
-        // 语义召回合并（仅当拿到查询向量）。
+        // 语义召回合并（仅当拿到查询向量），相似度随候选透传给调用方展示。
         if let Some(vector) = query_vector.as_ref() {
             let semantic = load_semantic_candidates(&connection, request, vector)?;
-            for (index, (memory, _similarity)) in semantic.iter().enumerate() {
+            for (index, (memory, similarity)) in semantic.iter().enumerate() {
                 if let Some(current) = candidates.get_mut(&memory.id) {
                     current.semantic_rank = Some(index as i64 + 1);
+                    current.semantic_similarity = Some(*similarity);
                     if !current.reasons.iter().any(|reason| reason == "SEMANTIC") {
                         current.reasons.push("SEMANTIC".to_string());
                     }
@@ -121,6 +130,7 @@ impl SearchService {
                             keyword_rank: None,
                             semantic_rank: Some(index as i64 + 1),
                             graph_rank: None,
+                            semantic_similarity: Some(*similarity),
                             reasons: vec!["SEMANTIC".to_string()],
                         },
                     );
@@ -129,30 +139,17 @@ impl SearchService {
         }
 
         // 图谱一跳扩展：对强结果（召回位次前 5）沿 memory_edge 扩展（计划 §检索联动）。
-        // 项目范围 Token 不得通过图谱扩展到其他项目（扩展查询沿用同一范围过滤）。
+        // 扩展邻居只给已召回候选追加 graph_rank 权重，不再以 GRAPH-only 身份
+        // 插入与查询无关的结果（检索精度优先，扩展查询沿用同一范围过滤）。
         if !candidates.is_empty() {
             let seeds: Vec<String> = order.iter().take(5).cloned().collect();
             let graph = load_graph_neighbors(&connection, request, &seeds, &candidates)?;
             for (rank, (memory, _score)) in graph.iter().enumerate() {
-                if candidates.contains_key(&memory.id) {
-                    if let Some(current) = candidates.get_mut(&memory.id) {
-                        current.graph_rank = Some(rank as i64 + 1);
-                        if !current.reasons.iter().any(|reason| reason == "GRAPH") {
-                            current.reasons.push("GRAPH".to_string());
-                        }
+                if let Some(current) = candidates.get_mut(&memory.id) {
+                    current.graph_rank = Some(rank as i64 + 1);
+                    if !current.reasons.iter().any(|reason| reason == "GRAPH") {
+                        current.reasons.push("GRAPH".to_string());
                     }
-                } else {
-                    order.push(memory.id.clone());
-                    candidates.insert(
-                        memory.id.clone(),
-                        RankedCandidate {
-                            memory: memory.clone(),
-                            keyword_rank: None,
-                            semantic_rank: None,
-                            graph_rank: Some(rank as i64 + 1),
-                            reasons: vec!["GRAPH".to_string()],
-                        },
-                    );
                 }
             }
         }
@@ -161,37 +158,52 @@ impl SearchService {
             return fuzzy_fallback(&connection, request, &query, limit);
         }
 
-        let semantic_available = query_vector.is_some();
-        let mut results: Vec<SearchResult> = order
-            .iter()
-            .map(|id| {
-                let candidate = &candidates[id];
-                let title_exact = candidate.memory.title.to_lowercase().eq(&query.to_lowercase());
+        // 最终排序：有效相似度降序——与卡片展示的匹配度同源，
+        // 保证展示百分比随位次单调不增（用户看到的第一名就是匹配度最高的）。
+        // 同分依次按标题命中层级、关键词位次、语义位次、图谱位次、召回插入序决胜。
+        let query_lower = query.to_lowercase();
+        let mut ranked: Vec<(f64, u8, i64, i64, i64, usize, SearchResult)> = Vec::new();
+        for (position, id) in order.iter().enumerate() {
+            let candidate = &candidates[id];
+            let title_lower = candidate.memory.title.to_lowercase();
+            let title_exact = title_lower == query_lower;
+            // 标题包含查询词（非全等）：无语义相似度时的强信号。
+            let title_contains = !title_exact && title_lower.contains(&query_lower);
+            let title_tier = if title_exact {
+                2
+            } else if title_contains {
+                1
+            } else {
+                0
+            };
+            let score = effective_similarity(candidate.semantic_similarity, title_exact, title_contains);
+            ranked.push((
+                score,
+                title_tier,
+                candidate.keyword_rank.unwrap_or(i64::MAX),
+                candidate.semantic_rank.unwrap_or(i64::MAX),
+                candidate.graph_rank.unwrap_or(i64::MAX),
+                position,
                 SearchResult {
-                    score: calculate_weighted_rrf_score(
-                        RrfRanks {
-                            keyword_rank: candidate.keyword_rank,
-                            semantic_rank: candidate.semantic_rank,
-                            graph_rank: candidate.graph_rank,
-                        },
-                        candidate.memory.importance,
-                        candidate.memory.is_pinned,
-                        candidate.memory.is_favorite,
-                        semantic_available,
-                        title_exact,
-                    ),
+                    score,
                     memory: candidate.memory.clone(),
                     match_reasons: candidate.reasons.clone(),
-                }
-            })
-            .collect();
-        // C# OrderByDescending 稳定排序：等分保持插入序。
-        results.sort_by(|left, right| {
+                    semantic_similarity: candidate.semantic_similarity,
+                },
+            ));
+        }
+        ranked.sort_by(|left, right| {
             right
-                .score
-                .partial_cmp(&left.score)
+                .0
+                .partial_cmp(&left.0)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| right.1.cmp(&left.1))
+                .then_with(|| left.2.cmp(&right.2))
+                .then_with(|| left.3.cmp(&right.3))
+                .then_with(|| left.4.cmp(&right.4))
+                .then_with(|| left.5.cmp(&right.5))
         });
+        let mut results: Vec<SearchResult> = ranked.into_iter().map(|entry| entry.6).collect();
         results.truncate(limit as usize);
         Ok(results)
     }
@@ -255,7 +267,9 @@ impl SearchService {
     }
 }
 
-/// 关键词候选：FTS SQL 与 C# 逐字一致（含 bm25 权重与全部过滤参数）。
+/// 关键词候选：FTS 召回（含 bm25 权重与全部过滤参数）。
+/// bm25 权重按列序对应 memory_id/title/keyword/summary/content；
+/// 首列 memory_id 为 unindexed（权重不生效），实际生效 title/keyword/summary/content = 5/4/3/1。
 fn load_keyword_candidates(
     connection: &Connection,
     request: &SearchRequest,
@@ -269,7 +283,7 @@ fn load_keyword_candidates(
                JOIN memory m ON m.id=memory_fts.memory_id \
                LEFT JOIN project p ON p.id=m.project_id \
                WHERE memory_fts MATCH $query \
-                 AND rank MATCH 'bm25(5.0,4.0,3.0,1.0)' \
+                 AND rank MATCH 'bm25(1.0,5.0,4.0,3.0,1.0)' \
                  AND m.status='Active' \
                  AND ($scope IS NULL OR m.scope=$scope) \
                  AND ($project_id IS NULL OR m.project_id=$project_id) \
@@ -298,7 +312,11 @@ fn load_keyword_candidates(
     Ok(memories)
 }
 
-/// 语义候选：读取向量、按点积降序取前 100（与 C# `LoadSemanticCandidatesAsync` 一致）。
+/// 语义候选最低相似度（向量已归一化，点积即余弦相似度）。
+/// 低于该值的候选视为无关噪声，不进入结果——否则任意查询都会召回 Top-N。
+const SEMANTIC_MIN_SIMILARITY: f32 = 0.35;
+
+/// 语义候选：读取向量、过滤相似度 ≥ 阈值后按点积降序取前 100。
 fn load_semantic_candidates(
     connection: &Connection,
     request: &SearchRequest,
@@ -343,7 +361,10 @@ fn load_semantic_candidates(
             .map(|chunk| f32::from_le_bytes(*chunk))
             .collect();
         if vector.len() == query_vector.len() {
-            candidates.push((memory, dot_product(query_vector, &vector)));
+            let similarity = dot_product(query_vector, &vector);
+            if similarity >= SEMANTIC_MIN_SIMILARITY {
+                candidates.push((memory, similarity));
+            }
         }
     }
     // C# OrderByDescending 稳定排序后取前 100。
@@ -386,6 +407,7 @@ fn fuzzy_fallback(
             memory,
             score: 0.1,
             match_reasons: vec!["FUZZY".to_string()],
+            semantic_similarity: None,
         });
     }
     Ok(results)
@@ -476,43 +498,18 @@ fn normalized_filter(value: Option<&str>) -> Option<String> {
         .map(|text| text.trim().to_string())
 }
 
-/// 三路召回位次（关键词 / 语义 / 图谱扩展）。
-#[derive(Default, Clone, Copy)]
-struct RrfRanks {
-    keyword_rank: Option<i64>,
-    semantic_rank: Option<i64>,
-    graph_rank: Option<i64>,
-}
-
-/// Weighted RRF 评分（计划 §检索联动权重：
-/// 有语义 关键词 50% + 语义 35% + 图谱 10% + 元数据 5%；
-/// 无语义 关键词 85% + 图谱 10% + 元数据 5%）。
-fn calculate_weighted_rrf_score(
-    ranks: RrfRanks,
-    importance: i64,
-    is_pinned: bool,
-    is_favorite: bool,
-    semantic_available: bool,
-    title_exact: bool,
-) -> f64 {
-    let keyword_weight = if semantic_available { 0.50 } else { 0.85 };
-    let mut score = match ranks.keyword_rank {
-        Some(rank) => keyword_weight / (60.0 + rank as f64),
-        None => 0.0,
-    };
-    score += match ranks.semantic_rank {
-        Some(rank) => 0.35 / (60.0 + rank as f64),
-        None => 0.0,
-    };
-    score += match ranks.graph_rank {
-        Some(rank) => 0.10 / (60.0 + rank as f64),
-        None => 0.0,
-    };
-    let metadata =
-        ((importance as f64 - 1.0) / 4.0 + if is_pinned { 1.0 } else { 0.0 } + if is_favorite { 0.5 } else { 0.0 })
-            / 2.5;
-    score += metadata * 0.05;
-    if title_exact { score + 1.0 } else { score }
+/// 有效相似度（最终排序主键，与卡片展示的匹配度同源）。
+/// 语义命中：余弦相似度原值（展示百分比即排序值，随位次单调不增）。
+/// 纯关键词命中（无向量参与）：伪相似度与语义结果同量纲参与排序——
+/// 标题全等 0.90 / 标题包含 0.75 / 其余 0.40（略高于语义召回阈值 0.35，
+/// 词法命中是确定性信号，不应淹没在低相似语义结果之下）。
+fn effective_similarity(similarity: Option<f32>, title_exact: bool, title_contains: bool) -> f64 {
+    match similarity {
+        Some(value) => value as f64,
+        None if title_exact => 0.90,
+        None if title_contains => 0.75,
+        None => 0.40,
+    }
 }
 
 /// 根据字段命中生成可解释原因（与 C# `Explain` 一致；忽略大小写比较）。
@@ -814,10 +811,50 @@ mod tests {
         let results = service.search(&search_request("忆栈")).unwrap();
         assert!(results.len() >= 2);
         assert_eq!(results[0].memory.id, exact.id);
-        // 无语义：关键词权重 85%。
-        assert_eq!(results[0].score, 1.0 + 0.85 / 61.0 + (0.5) / 2.5 * 0.05);
+        // 无语义命中：标题全等伪相似度 0.90；标题包含 0.75 次之。
+        assert_eq!(results[0].score, 0.90);
         assert!(results[0].match_reasons.contains(&"TITLE_EXACT".to_string()));
         assert!(results.iter().any(|result| result.memory.id == other.id));
+    }
+
+    #[test]
+    fn title_contains_boosts_partial_title_to_top() {
+        let context = context();
+        // 搜"发布流程"：标题包含它的记忆应排第一，正文提到它的排后面。
+        let titled = context
+            .memories
+            .create(&save_request("团队发布流程规范", "规范说明", vec![], vec![], 3))
+            .unwrap();
+        let mentioned = context
+            .memories
+            .create(&save_request("周报", "本周整理了发布流程相关的进展", vec![], vec![], 5))
+            .unwrap();
+        let service = SearchService::new(context.database.clone(), Arc::new(FixedVectors(None)));
+        let results = service.search(&search_request("发布流程")).unwrap();
+        assert!(results.len() >= 2);
+        assert_eq!(results[0].memory.id, titled.id);
+        assert!(results.iter().any(|result| result.memory.id == mentioned.id));
+        // 标题包含伪相似度 0.75，明显高于正文命中（0.40）。
+        assert_eq!(results[0].score, 0.75);
+    }
+
+    #[test]
+    fn semantic_below_threshold_returns_nothing() {
+        let context = context();
+        // FTS 无法命中（标题/正文都不含查询词），语义相似度 0.2 < 0.35 阈值。
+        let memory = context
+            .memories
+            .create(&save_request("无关条目", "无关正文", vec![], vec![], 3))
+            .unwrap();
+        insert_embedding(&context, &memory.id, &[0.2, 0.98, 0.0, 0.0]);
+        let service = SearchService::new(
+            context.database.clone(),
+            Arc::new(FixedVectors(Some(vec![1.0, 0.0, 0.0, 0.0]))),
+        );
+        let mut request = search_request("毫不相干的查询xyz");
+        request.semantic_enabled = true;
+        let results = service.search(&request).unwrap();
+        assert!(results.is_empty());
     }
 
     #[test]
@@ -837,28 +874,33 @@ mod tests {
             .memories
             .create(&save_request("完全不相关标题", "完全不相关正文内容", vec![], vec![], 3))
             .unwrap();
-        // 4 维查询向量；语义记忆同向（相似度高），关键词记忆反向。
+        // 4 维查询向量；语义记忆相似度高，关键词记忆相似度中等（均过 0.35 阈值）。
         let query_vector = vec![1.0, 0.0, 0.0, 0.0];
-        insert_embedding(&context, &keyword_hit.id, &[-1.0, 0.0, 0.0, 0.0]);
+        insert_embedding(&context, &keyword_hit.id, &[0.4, 0.3, 0.0, 0.0]);
         insert_embedding(&context, &semantic_only.id, &[0.9, 0.1, 0.0, 0.0]);
         let service = SearchService::new(context.database.clone(), Arc::new(FixedVectors(Some(query_vector))));
         let mut request = search_request("语义测试");
         request.semantic_enabled = true;
         let results = service.search(&request).unwrap();
+        // 相似度高者排第一（有效相似度即排序主键）。
+        assert_eq!(results[0].memory.id, semantic_only.id);
         // 语义记忆进入结果且 reason 仅为 SEMANTIC。
         let semantic_result = results
             .iter()
             .find(|result| result.memory.id == semantic_only.id)
             .expect("语义召回条目应出现在结果中");
         assert_eq!(semantic_result.match_reasons, vec!["SEMANTIC".to_string()]);
-        // 关键词条目追加 SEMANTIC（去重）。
+        // 相似度透传（点积 0.9），排序值与展示值一致。
+        assert!((semantic_result.semantic_similarity.unwrap() - 0.9).abs() < 1e-5);
+        assert!((semantic_result.score - 0.9).abs() < 1e-5);
+        // 关键词条目追加 SEMANTIC（去重），相似度同样透传（点积 0.4）。
         let keyword_result = results
             .iter()
             .find(|result| result.memory.id == keyword_hit.id)
             .expect("关键词条目应在结果中");
         assert!(keyword_result.match_reasons.contains(&"SEMANTIC".to_string()));
-        // 语义可用时 keyword 权重 0.60。
-        assert!(keyword_result.score < 0.60 / 61.0 + 1.0);
+        assert!((keyword_result.semantic_similarity.unwrap() - 0.4).abs() < 1e-5);
+        assert!((keyword_result.score - 0.4).abs() < 1e-5);
     }
 
     #[test]
@@ -952,25 +994,49 @@ mod tests {
     }
 
     #[test]
-    fn weighted_rrf_matches_plan_formula() {
-        let ranks = |keyword: Option<i64>, semantic: Option<i64>, graph: Option<i64>| RrfRanks {
-            keyword_rank: keyword,
-            semantic_rank: semantic,
-            graph_rank: graph,
-        };
-        // 纯关键词（无语义）：关键词 85% → 0.85/(60+1) + metadata*0.05。
-        let score = calculate_weighted_rrf_score(ranks(Some(1), None, None), 3, false, false, false, false);
-        assert!((score - (0.85 / 61.0 + ((3.0 - 1.0) / 4.0) / 2.5 * 0.05)).abs() < 1e-12);
-        // 语义可用（关键词 50% + 语义 35%）+ 置顶 + 收藏 + 标题全中。
-        let score = calculate_weighted_rrf_score(ranks(Some(2), Some(1), None), 5, true, true, true, true);
-        let expected = 0.50 / 62.0 + 0.35 / 61.0 + (((5.0 - 1.0) / 4.0 + 1.0 + 0.5) / 2.5) * 0.05 + 1.0;
-        assert!((score - expected).abs() < 1e-12);
-        // 无关键词命中（语义专属）。
-        let score = calculate_weighted_rrf_score(ranks(None, Some(3), None), 1, false, false, true, false);
-        assert!((score - 0.35 / 63.0).abs() < 1e-12);
-        // 图谱扩展命中（10% 权重）。
-        let score = calculate_weighted_rrf_score(ranks(None, None, Some(2)), 1, false, false, false, false);
-        assert!((score - 0.10 / 62.0).abs() < 1e-12);
+    fn effective_similarity_tiers_match_display_order() {
+        // 语义命中：相似度原值即排序值（展示百分比与位次一致）。
+        assert!((effective_similarity(Some(0.62), false, false) - 0.62).abs() < 1e-6);
+        assert!((effective_similarity(Some(0.9), true, false) - 0.9).abs() < 1e-6);
+        // 纯关键词命中：伪相似度同量纲参与排序。
+        assert_eq!(effective_similarity(None, true, false), 0.90);
+        assert_eq!(effective_similarity(None, false, true), 0.75);
+        assert_eq!(effective_similarity(None, false, false), 0.40);
+    }
+
+    #[test]
+    fn semantic_results_sorted_by_similarity_desc() {
+        let context = context();
+        // 三条语义候选（相似度 0.5/0.9/0.6），FTS 均不命中。
+        let low = context
+            .memories
+            .create(&save_request("甲条目", "甲正文", vec![], vec![], 3))
+            .unwrap();
+        let high = context
+            .memories
+            .create(&save_request("乙条目", "乙正文", vec![], vec![], 3))
+            .unwrap();
+        let mid = context
+            .memories
+            .create(&save_request("丙条目", "丙正文", vec![], vec![], 3))
+            .unwrap();
+        insert_embedding(&context, &low.id, &[0.5, 0.866, 0.0, 0.0]);
+        insert_embedding(&context, &high.id, &[0.9, 0.436, 0.0, 0.0]);
+        insert_embedding(&context, &mid.id, &[0.6, 0.8, 0.0, 0.0]);
+        let service = SearchService::new(
+            context.database.clone(),
+            Arc::new(FixedVectors(Some(vec![1.0, 0.0, 0.0, 0.0]))),
+        );
+        let mut request = search_request("毫不相干查询xyz");
+        request.semantic_enabled = true;
+        let results = service.search(&request).unwrap();
+        assert_eq!(results.len(), 3);
+        // 匹配度最高的排第一，展示值随位次单调不增。
+        assert_eq!(results[0].memory.id, high.id);
+        assert_eq!(results[1].memory.id, mid.id);
+        assert_eq!(results[2].memory.id, low.id);
+        assert!(results[0].score >= results[1].score);
+        assert!(results[1].score >= results[2].score);
     }
 
     #[test]
@@ -1009,6 +1075,7 @@ mod tests {
             },
             score,
             match_reasons: vec!["CONTENT".to_string()],
+            semantic_similarity: None,
         };
         let reference = make("a", 0.02, "甲乙丙丁戊己庚辛");
         let near_duplicate = make("b", 0.019, "甲乙丙丁戊己庚辛");

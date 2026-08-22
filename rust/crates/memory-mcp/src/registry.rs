@@ -34,8 +34,8 @@ pub fn is_known_tool(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// 16 个单一职责工具（对应迁移计划阶段 5）。
-    const EXPECTED: [&str; 16] = [
+    /// 21 个单一职责工具（16 个既有工具 + 5 个项目文档/结论卡片工具）。
+    const EXPECTED: [&str; 21] = [
         "memory_search",
         "memory_get",
         "memory_recent",
@@ -52,13 +52,18 @@ mod tests {
         "project_resolve",
         "project_create",
         "project_update",
+        "project_handoff_get",
+        "project_document_draft_create",
+        "project_document_draft_update",
+        "project_document_batch_update",
+        "conclusion_card_candidate_submit",
     ];
 
     #[test]
-    fn snapshot_contains_exactly_sixteen_tools() {
+    fn snapshot_contains_exactly_twenty_one_tools() {
         let snapshot = tools_list_json();
         let tools = snapshot["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 16, "工具数量必须是 16：{tools:?}");
+        assert_eq!(tools.len(), 21, "工具数量必须是 21：{tools:?}");
         let mut names: Vec<&str> = tools.iter().map(|tool| tool["name"].as_str().unwrap()).collect();
         names.sort_unstable();
         let mut expected = EXPECTED;

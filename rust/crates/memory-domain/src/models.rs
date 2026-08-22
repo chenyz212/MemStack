@@ -518,7 +518,7 @@ pub struct OverviewResult {
     pub mcp_status: String,
     pub recent_assistant_name: Option<String>,
     pub last_mcp_call_at: Option<String>,
-    /// 最近一次 MCP 读取/创建活动（v8 起 mcp_token 记录，供总览活动文案）。
+    /// 最近一次 MCP 记忆活动（v8 起 mcp_token 记录，供总览活动文案）。
     #[serde(default)]
     pub mcp_activity: Option<McpActivitySummary>,
     /// 未吊销、未过期的 AI 工具（按最近使用排序，最多 6 个），供总览双层轨道。
@@ -534,7 +534,7 @@ pub struct OverviewResult {
 #[serde(rename_all = "camelCase")]
 pub struct McpActivitySummary {
     pub display_name: String,
-    /// `READ` / `CREATE`。
+    /// `READ` / `CREATE` / `UPDATE` / `ARCHIVE`。
     pub action: String,
     /// `Personal` / `Project` / `Mixed`。
     pub scope: String,
@@ -571,13 +571,16 @@ pub struct SearchRequest {
     pub semantic_enabled: bool,
 }
 
-/// 检索结果 DTO（字段与 C# `SearchResult` 一致）。
+/// 检索结果 DTO（字段与 C# `SearchResult` 一致，`semanticSimilarity` 为扩展字段）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchResult {
     pub memory: MemoryItem,
     pub score: f64,
     pub match_reasons: Vec<String>,
+    /// 语义相似度（归一化向量的余弦值）；未参与语义召回（如纯关键词命中）为 None。
+    #[serde(default)]
+    pub semantic_similarity: Option<f32>,
 }
 
 /// 上下文组装请求（字段与 C# `ContextRequest` 一致）。

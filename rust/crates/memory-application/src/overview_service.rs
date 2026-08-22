@@ -121,7 +121,7 @@ fn recent_memories_excluding_archived_projects(connection: &Connection) -> Resul
     Ok(items)
 }
 
-/// 最近一次 MCP 记忆活动（读取/创建），无活动或字段为空时返回 `None`。
+/// 最近一次 MCP 记忆活动，无活动或字段为空时返回 `None`。
 fn latest_mcp_activity(connection: &Connection) -> Result<Option<McpActivitySummary>, BusinessError> {
     let activity = connection
         .query_row(

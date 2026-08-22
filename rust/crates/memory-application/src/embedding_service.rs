@@ -14,7 +14,7 @@ use memory_domain::{
     BusinessError, EmbeddingSettingsView, EmbeddingStatus, EmbeddingTestResult, ErrorCode, RebuildTicket,
     SaveEmbeddingSettingsRequest,
 };
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
 use crate::clock::{Clock, format_storage_time};
@@ -217,6 +217,9 @@ impl EmbeddingService {
         transaction
             .execute("DELETE FROM memory_embedding;", [])
             .map_err(map_sqlite_error)?;
+        transaction
+            .execute("DELETE FROM project_document_embedding;", [])
+            .map_err(map_sqlite_error)?;
         // 向量清空后：纯语义关系失去依据，一并删除；关键词关系保留待重算。
         transaction
             .execute("DELETE FROM memory_edge WHERE dominant_signal='SEMANTIC';", [])
@@ -279,7 +282,8 @@ impl EmbeddingService {
         let connection = self.database.open()?;
         let pending: i64 = connection
             .query_row(
-                "SELECT count(*) FROM background_task WHERE task_type IN ('EMBED_MEMORY','REBUILD_EMBEDDING') AND status IN ('PENDING','RUNNING');",
+                "SELECT count(*) FROM background_task WHERE task_type IN \
+                 ('EMBED_MEMORY','EMBED_PROJECT_DOCUMENT','REBUILD_EMBEDDING') AND status IN ('PENDING','RUNNING');",
                 [],
                 |row| row.get(0),
             )
@@ -429,6 +433,71 @@ impl EmbeddingService {
                  dimensions=excluded.dimensions,content_checksum=excluded.content_checksum, \
                  vector_blob=excluded.vector_blob,updated_at=excluded.updated_at;",
                 params![memory_id, view.model, view.dimensions, checksum, blob, now_text],
+            )
+            .map_err(map_sqlite_error)?;
+        Ok(())
+    }
+
+    /// 为指定项目文档生成并保存独立向量；文档不进入普通记忆向量表。
+    pub fn process_project_document(&self, document_id: &str) -> Result<(), BusinessError> {
+        let view = self.get_settings()?;
+        let connection = self.database.open()?;
+        let row: Option<(String, String, String, String, bool)> = connection
+            .query_row(
+                "SELECT d.project_id,d.document_type,d.content,d.checksum,p.project_document_embedding_enabled \
+                 FROM project_document d INNER JOIN project p ON p.id=d.project_id WHERE d.id=$id;",
+                params![document_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get::<_, i64>(4)? != 0,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(map_sqlite_error)?;
+        let Some((project_id, document_type, content, checksum, project_enabled)) = row else {
+            return Ok(());
+        };
+        if !project_enabled || !view.enabled || !view.configured {
+            connection
+                .execute(
+                    "DELETE FROM project_document_embedding WHERE project_id=$pid AND document_type=$type;",
+                    params![project_id, document_type],
+                )
+                .map_err(map_sqlite_error)?;
+            return Ok(());
+        }
+        let settings = self.read_settings()?;
+        let plain_key = memory_platform::dpapi::unprotect(
+            settings
+                .get("embedding.api_key")
+                .ok_or_else(|| BusinessError::with_message(ErrorCode::InternalError, "Embedding API Key 缺失"))?,
+        )
+        .map_err(|_| BusinessError::with_message(ErrorCode::InternalError, "Embedding API Key 解密失败"))?;
+        let vector = normalize(
+            self.http
+                .request_embedding(&view.base_url, &plain_key, &view.model, view.dimensions, &content)
+                .map_err(|message| BusinessError::with_message(ErrorCode::InternalError, message))?,
+        );
+        if vector.len() as i64 != view.dimensions {
+            return Err(BusinessError::new(ErrorCode::EmbeddingDimensionsMismatch));
+        }
+        let mut blob = Vec::with_capacity(vector.len() * 4);
+        for value in &vector {
+            blob.extend_from_slice(&value.to_le_bytes());
+        }
+        let now_text = format_storage_time(self.clock.now_utc());
+        connection
+            .execute(
+                "INSERT INTO project_document_embedding(project_id,document_type,provider,model,dimensions,content_checksum,vector_blob,updated_at) \
+                 VALUES($pid,$type,'OPENAI_COMPATIBLE',$model,$dimensions,$checksum,$vector,$updated) \
+                 ON CONFLICT(project_id,document_type) DO UPDATE SET provider=excluded.provider,model=excluded.model, \
+                 dimensions=excluded.dimensions,content_checksum=excluded.content_checksum,vector_blob=excluded.vector_blob,updated_at=excluded.updated_at;",
+                params![project_id, document_type, view.model, view.dimensions, checksum, blob, now_text],
             )
             .map_err(map_sqlite_error)?;
         Ok(())
@@ -779,5 +848,43 @@ mod tests {
             .unwrap();
         drop(connection);
         assert_eq!(rebuilds, 1);
+    }
+
+    #[test]
+    fn process_project_document_writes_only_independent_embedding() {
+        let context = context();
+        let service = make_service(&context, 128, false);
+        service.save(&save_request()).unwrap();
+        let connection = context.database.open().unwrap();
+        connection
+            .execute(
+                "INSERT INTO project(id,name,description,color,is_archived,project_document_embedding_enabled,created_at,updated_at) \
+                 VALUES('project-embedding','项目 Embedding','','#238f7a',0,1,'2026-08-15T08:00:00+00:00','2026-08-15T08:00:00+00:00');",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO project_document(id,project_id,document_type,relative_path,content,checksum,version,embedding_enabled,sync_status,created_at,updated_at) \
+                 VALUES('document-embedding','project-embedding','CONTEXT','01_CONTEXT.md','项目文档正文','checksum-project',1,1,'SYNCED','2026-08-15T08:00:00+00:00','2026-08-15T08:00:00+00:00');",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        service.process_project_document("document-embedding").unwrap();
+        let connection = context.database.open().unwrap();
+        let project_vectors: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM project_document_embedding WHERE project_id='project-embedding';",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let memory_vectors: i64 = connection
+            .query_row("SELECT count(*) FROM memory_embedding;", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(project_vectors, 1);
+        assert_eq!(memory_vectors, 0, "项目文档向量不得污染普通记忆向量表");
     }
 }

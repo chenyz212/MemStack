@@ -89,10 +89,14 @@ fn full_session_keeps_stdout_pure_and_returns_search_results() {
 
     let tools_list: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
     let tools = tools_list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 16, "阶段 5 必须注册 16 个工具");
+    assert_eq!(tools.len(), 21, "必须注册 21 个工具（16 既有 + 5 项目文档）");
     assert!(
         tools.iter().any(|tool| tool["name"] == "memory_search"),
         "必须包含 memory_search"
+    );
+    assert!(
+        tools.iter().any(|tool| tool["name"] == "project_handoff_get"),
+        "必须包含 project_handoff_get"
     );
 
     let tools_call: serde_json::Value = serde_json::from_str(&lines[2]).unwrap();
@@ -106,6 +110,29 @@ fn full_session_keeps_stdout_pure_and_returns_search_results() {
     assert!(!results.is_empty(), "中文检索必须命中样本数据");
     assert!(results[0]["memory"]["title"].as_str().unwrap().contains("基线"));
 
+    let _ = std::fs::remove_dir_all(&fixture.work_directory);
+}
+
+/// MCP 规范：ping 须回空对象 {}，且会话存活（不发 -32601）。
+#[test]
+fn ping_returns_empty_result_object_and_session_survives() {
+    let Some(fixture) = setup_fixture() else { return };
+    let (lines, _stderr, code) = run_session(
+        &fixture,
+        &fixture.plain_token,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0.0.1"}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}"#,
+        ],
+    );
+    assert_eq!(code, Some(0));
+    let ping: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
+    assert!(ping["error"].is_null(), "ping 不得返回 JSON-RPC error");
+    assert_eq!(ping["result"], serde_json::json!({}), "ping 必须回空对象");
+    // 会话存活：ping 之后 tools/list 正常。
+    let tools_list: serde_json::Value = serde_json::from_str(&lines[2]).unwrap();
+    assert_eq!(tools_list["result"]["tools"].as_array().unwrap().len(), 21);
     let _ = std::fs::remove_dir_all(&fixture.work_directory);
 }
 
@@ -171,11 +198,15 @@ fn business_error_returns_is_error_result_and_session_survives() {
         error_text.ends_with("（调用工具：memory_get）"),
         "content 含工具名，实际: {error_text}"
     );
-    // structuredContent.error 也应有详情（机器可读，可让 AI 自动修正参数）。
-    let structured_error = &error_frame["result"]["structuredContent"]["error"];
-    assert_eq!(structured_error["code"], "MEMORY_NOT_FOUND");
-    assert!(structured_error["message"].as_str().unwrap().contains("记忆不存在"));
-    assert_eq!(structured_error["tool"], "memory_get");
+    // 不得携带 structuredContent：outputSchema 描述的是成功载荷（id/scope/…），
+    // 错误详情放进 structuredContent 会被 MCP 客户端按 outputSchema 校验整体拒绝，
+    // 真实错误消息到不了 LLM（实测曾把 MCP_PROJECT_SCOPE_DENIED 伪装成
+    // 「Structured content does not match the tool's output schema」）。
+    assert!(
+        error_frame["result"].get("structuredContent").is_none(),
+        "业务错误不得携带 structuredContent，实际：{}",
+        error_frame["result"]
+    );
     // 会话存活：后续调用正常。
     let ok_frame: serde_json::Value = serde_json::from_str(&lines[2]).unwrap();
     assert!(
@@ -279,7 +310,7 @@ fn session_id_mode_loads_identity_from_dpapi_ciphertext() {
         .unwrap()
         .to_string();
     let tools_list: serde_json::Value = serde_json::from_str(&first_line).unwrap();
-    assert_eq!(tools_list["result"]["tools"].as_array().unwrap().len(), 16);
+    assert_eq!(tools_list["result"]["tools"].as_array().unwrap().len(), 21);
     let _ = std::fs::remove_dir_all(&fixture.work_directory);
 }
 
@@ -361,7 +392,7 @@ fn stdout_json_purity_streaming_check() {
     let _ = std::fs::remove_dir_all(&fixture.work_directory);
 }
 
-/// T10 连接测试服务对真实 exe 的端到端握手：报告成功且 16 工具齐全。
+/// T10 连接测试服务对真实 exe 的端到端握手：报告成功且 21 个工具齐全。
 #[test]
 fn connection_test_service_passes_against_real_exe() {
     let Some(fixture) = setup_fixture() else { return };
@@ -372,8 +403,59 @@ fn connection_test_service_passes_against_real_exe() {
         &[],
     );
     assert!(report.ok, "真实 exe 握手应通过：{}", report.message);
-    assert_eq!(report.tool_count, 16);
+    assert_eq!(report.tool_count, 21);
     assert_eq!(report.message, "MCP 连接测试通过");
     assert!(report.elapsed_ms > 0);
+    let _ = std::fs::remove_dir_all(&fixture.work_directory);
+}
+
+/// 观测埋点回归：tools/call 的耗时日志写入 `MEMSTACK_MCP_LOG_FILE` 指定文件，
+/// 成功与业务错误调用分别标记 outcome=ok / outcome=error；
+/// 同时测试子进程（显式 MEMSTACK_DB_PATH）不写生产 mcp-stdio.log。
+#[test]
+fn tool_call_writes_observation_log_line() {
+    let Some(fixture) = setup_fixture() else { return };
+    let log_path = fixture.work_directory.join("observe.log");
+    let mut child = Command::new(exe_path())
+        .env("MEMSTACK_DB_PATH", &fixture.database_path)
+        .env("MEMSTACK_TOKEN", &fixture.plain_token)
+        .env("MEMSTACK_MCP_LOG_FILE", &log_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("启动 MemStack-MCP 失败");
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"memory_search","arguments":{{"query":"迁移基线","memoryType":"","tag":"","limit":5,"semanticEnabled":false}}}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"memory_get","arguments":{{"memoryId":"00000000-0000-4000-8000-000000000000"}}}}}}"#
+        )
+        .unwrap();
+    }
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("等待子进程失败");
+    assert_eq!(output.status.code(), Some(0));
+    let log_text = std::fs::read_to_string(&log_path).unwrap_or_else(|error| panic!("观测日志文件应存在：{error}"));
+    let ok_line = log_text
+        .lines()
+        .find(|line| line.contains("tool_call name=memory_search"))
+        .unwrap_or_else(|| panic!("缺少 memory_search 观测行，实际：{log_text}"));
+    assert!(ok_line.contains("outcome=ok"), "成功调用标记 ok：{ok_line}");
+    assert!(ok_line.contains("elapsed_ms="), "耗时字段存在：{ok_line}");
+    assert!(ok_line.contains("args_bytes="), "参数体积字段存在：{ok_line}");
+    let error_line = log_text
+        .lines()
+        .find(|line| line.contains("tool_call name=memory_get"))
+        .unwrap_or_else(|| panic!("缺少 memory_get 观测行，实际：{log_text}"));
+    assert!(
+        error_line.contains("outcome=error"),
+        "业务错误调用标记 error：{error_line}"
+    );
     let _ = std::fs::remove_dir_all(&fixture.work_directory);
 }

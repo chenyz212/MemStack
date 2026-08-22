@@ -87,12 +87,16 @@ impl MemoryService {
     }
 
     /// 在同一事务中把候选写入正式记忆、索引和任务，并删除原候选。
+    ///
+    /// `conclusion_payload` 存在时（结论卡片候选），同一事务内追加 `conclusion_card`
+    /// 结构化扩展记录（§7.4：记忆 + 扩展 + FTS + 可选 Embedding + 图谱任务）。
     pub fn confirm_candidate(
         &self,
         candidate_id: &str,
         expected_candidate_version: i64,
         request: &SaveMemoryRequest,
         source_name: &str,
+        conclusion_payload: Option<&memory_domain::ConclusionCardPayload>,
     ) -> Result<MemoryItem, BusinessError> {
         validate_memory(request, false)?;
         let memory_id = self.ids.new_id();
@@ -110,6 +114,12 @@ impl MemoryService {
                 } else {
                     Ok(())
                 }
+            })
+            .and_then(|_| {
+                if let Some(payload) = conclusion_payload {
+                    insert_conclusion_card(&transaction, &memory_id, payload, &now_text)?;
+                }
+                Ok(())
             })
             .and_then(|_| {
                 let deleted = transaction
@@ -700,6 +710,26 @@ fn insert_memory(
              $importance,$is_favorite,$is_pinned,$cloud_processing_allowed,'Active',1,$checksum, \
              $source,$source,$created_at,$updated_at,NULL);",
             memory_insert_params(id, request, checksum, source_name, now_text).as_slice(),
+        )
+        .map_err(map_memory_write_error)?;
+    Ok(())
+}
+
+/// 在确认事务内写入结论卡片结构化扩展记录（§7.4）。
+fn insert_conclusion_card(
+    transaction: &Transaction<'_>,
+    memory_id: &str,
+    payload: &memory_domain::ConclusionCardPayload,
+    now_text: &str,
+) -> Result<(), BusinessError> {
+    let payload_json = serde_json::to_string(payload).map_err(|error| {
+        BusinessError::with_message(ErrorCode::InternalError, format!("序列化结论卡片失败：{error}"))
+    })?;
+    transaction
+        .execute(
+            "INSERT INTO conclusion_card(memory_id,problem_id,structured_payload_json,created_at,updated_at) \
+             VALUES($memory_id,$problem_id,$payload,$now,$now);",
+            params![memory_id, payload.problem_id, payload_json, now_text],
         )
         .map_err(map_memory_write_error)?;
     Ok(())

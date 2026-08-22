@@ -1,6 +1,6 @@
 # MemStack 桌面客户端
 
-这是 MemStack 的 Windows 个人桌面客户端，当前整体版本为 `0.4.0`，纯 Tauri + Rust 架构。
+这是 MemStack 的 Windows 个人桌面客户端，当前整体版本为 `0.4.1`，纯 Tauri + Rust 架构。
 
 ## 下载
 
@@ -39,7 +39,7 @@ Set-Location ..
 memory-web\node_modules\.bin\tauri.cmd build
 ```
 
-产物：`target\release\memstack-desktop.exe`（主程序）、`target\release\MemStack-MCP.exe`（MCP stdio 服务器）、`target\release\bundle\nsis\MemStack_0.4.0_x64-setup.exe`（NSIS 安装包）。
+产物：`target\release\memstack-desktop.exe`（主程序）、`target\release\MemStack-MCP.exe`（MCP stdio 服务器）、`target\release\bundle\nsis\MemStack_0.4.1_x64-setup.exe`（NSIS 安装包）。
 
 开发调试：`npm run dev`（memory-web）+ `cargo run`（src-tauri），或直接 `tauri.cmd dev`。
 
@@ -69,7 +69,7 @@ MCP 提供 16 个单一职责工具：
 ```powershell
 # 在仓库根目录执行
 cargo build --release
-powershell -ExecutionPolicy Bypass -File scripts\package-portable.ps1 -Version "0.4.0"
+powershell -ExecutionPolicy Bypass -File scripts\package-portable.ps1 -Version "0.4.1"
 ```
 
-生成结果位于 `MemStack-Portable-0.4.0\`（MemStack.exe + MemStack-MCP.exe + version.txt，含 SHA-256）。绿色版解压即用，复用系统 WebView2 Runtime，无需 Java、Node.js 或外部数据库。
+生成结果位于 `MemStack-Portable-0.4.1\`（MemStack.exe + MemStack-MCP.exe + version.txt，含 SHA-256）。绿色版解压即用，复用系统 WebView2 Runtime，无需 Java、Node.js 或外部数据库。

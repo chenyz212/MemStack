@@ -1,6 +1,6 @@
 //! 双真实进程迁移竞争测试：两个 MemStack-MCP.exe 并发指向同一 v3 副本，
 //! 迁移发生在鉴权之前（子进程因无效 Token 非零退出属预期），
-//! 终态必须是 schema 8 且完整性 ok（迁移执行计划 §6.3）。
+//! 终态必须是当前 schema 10 且完整性 ok（迁移执行计划 §6.3）。
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -47,7 +47,7 @@ fn two_mcp_processes_race_migration_and_converge() {
     let version: i64 = connection
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 8, "双进程竞争后必须收敛到 schema 8");
+    assert_eq!(version, 10, "双进程竞争后必须收敛到 schema 10");
     let integrity: String = connection
         .query_row("PRAGMA integrity_check;", [], |row| row.get(0))
         .unwrap();

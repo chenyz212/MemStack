@@ -152,7 +152,7 @@ fn permission_text(permission: McpPermission) -> &'static str {
     }
 }
 
-/// MCP 最近记忆活动记录器（v8 字段；仅成功读取工具与 memory_create 调用）。
+/// MCP 最近记忆活动记录器（记录成功的记忆读取与写入操作）。
 ///
 /// 写入失败静默（活动文案是展示增强，不阻断工具响应）。
 pub struct MemoryActivityRecorder {
@@ -166,9 +166,9 @@ impl MemoryActivityRecorder {
         Self { database, clock }
     }
 
-    /// 记录一次成功的记忆读取/创建活动。
+    /// 记录一次成功的记忆活动。
     ///
-    /// - `action`：`READ` / `CREATE`。
+    /// - `action`：`READ` / `CREATE` / `UPDATE` / `ARCHIVE`。
     /// - `scope`：`Personal` / `Project` / `Mixed`。
     pub fn record(&self, token_id: &str, action: &str, scope: &str) {
         let Ok(connection) = self.database.open() else {

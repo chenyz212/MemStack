@@ -1,4 +1,4 @@
-//! v1→v7 迁移链验收测试：全链升级、与 C# 样本结构等价、v7 语义修复与段级原子性。
+//! v1→v10 迁移链验收测试：全链升级、与 C# 样本结构等价、v7 语义修复与段级原子性。
 //!
 //! 样本缺失时跳过（保持无样本环境可独立运行）。
 
@@ -53,23 +53,25 @@ fn open_initialized_on_empty_file_creates_full_schema() {
     std::fs::write(&path, b"").unwrap();
 
     let connection = memory_storage::open_initialized(&path).unwrap();
-    assert_eq!(user_version(&connection), 8);
+    assert_eq!(user_version(&connection), 10);
     assert_eq!(integrity(&connection), "ok");
     let tables: i64 = connection
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE type IN ('table','view') AND name IN
                 ('app_setting','project','memory','memory_revision','memory_embedding','memory_edge',
-                 'memory_candidate','mcp_token','mcp_client_session','background_task','memory_fts');",
+                 'memory_candidate','mcp_token','mcp_client_session','background_task','memory_fts',
+                 'project_document','project_document_draft','project_document_promotion','conclusion_card',
+                 'project_document_fts','project_document_embedding');",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(tables, 11);
+    assert_eq!(tables, 17);
     let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]
-fn open_initialized_upgrades_each_sample_to_version_8() {
+fn open_initialized_upgrades_each_sample_to_version_10() {
     for version in 1..=7 {
         let Some(source) = sample(&format!("v{version}.db")) else {
             eprintln!("跳过：缺少 v{version}.db 样本");
@@ -77,7 +79,7 @@ fn open_initialized_upgrades_each_sample_to_version_8() {
         };
         let path = work_copy(&format!("chain-v{version}"), &source);
         let connection = memory_storage::open_initialized(&path).unwrap();
-        assert_eq!(user_version(&connection), 8, "v{version} 副本必须升级到 8");
+        assert_eq!(user_version(&connection), 10, "v{version} 副本必须升级到 10");
         assert_eq!(integrity(&connection), "ok");
         drop(connection);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -85,7 +87,9 @@ fn open_initialized_upgrades_each_sample_to_version_8() {
 }
 
 /// Rust 迁移 v1 副本后的库结构必须与 C# 迁移链产物（v7.db 样本）一致；
-/// v8 在 mcp_token 上追加了 3 个活动列（Rust 独有），按列级对照排除后必须完全一致。
+/// v8 在 mcp_token 上追加了 3 个活动列、v9 在 project 上追加了 2 个文档列、
+/// 在 memory_candidate 上追加了 1 个结构化载荷列并新增 4 张项目文档表
+/// （均 Rust 独有），v10 再增加独立文档索引表；按列级对照排除后必须完全一致。
 #[test]
 fn rust_migration_matches_csharp_v7_schema() {
     let Some(v1) = sample("v1.db") else {
@@ -104,7 +108,17 @@ fn rust_migration_matches_csharp_v7_schema() {
         connection
             .prepare(
                 "SELECT type, name, coalesce(sql,'') FROM sqlite_master \
-                 WHERE name NOT LIKE 'sqlite_%' AND NOT (type='table' AND name='mcp_token') \
+                 WHERE name NOT LIKE 'sqlite_%' \
+                   AND name NOT IN ('mcp_token','project','memory_candidate', \
+                                    'project_document','project_document_draft', \
+                                    'project_document_promotion','conclusion_card', \
+                                    'project_document_fts','project_document_embedding') \
+                   AND name NOT LIKE 'idx_project_document%' \
+                   AND name NOT LIKE 'idx_project_document_draft%' \
+                   AND name NOT LIKE 'uk_project_document%' \
+                 AND name NOT LIKE 'idx_conclusion_card%' \
+                 AND name NOT LIKE 'project_document_fts_%' \
+                 AND name NOT LIKE 'idx_project_document_embedding%' \
                  ORDER BY type, name;",
             )
             .unwrap()
@@ -125,7 +139,7 @@ fn rust_migration_matches_csharp_v7_schema() {
     assert_eq!(
         rust_schema,
         csharp_schema,
-        "除 v8 新增列所在的 mcp_token 外，Rust 迁移产物与 C# v7 样本结构必须逐行一致（共 {} 行）",
+        "除 Rust 独有的 v8/v9 追加结构外，Rust 迁移产物与 C# v7 样本结构必须逐行一致（共 {} 行）",
         csharp_schema.len()
     );
 
@@ -146,6 +160,45 @@ fn rust_migration_matches_csharp_v7_schema() {
         "last_action_at".to_string(),
     ]);
     assert_eq!(columns(&rust_connection), expected, "v8 仅按序追加 3 个活动列");
+
+    // project：v7 列集合 + 按序追加的 2 个 v9 项目文档列。
+    let project_columns = |connection: &Connection| {
+        connection
+            .prepare("SELECT name FROM pragma_table_info('project');")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let mut expected_project = project_columns(&csharp_connection);
+    expected_project.extend([
+        "project_document_embedding_enabled".to_string(),
+        "project_document_workspace_path".to_string(),
+    ]);
+    assert_eq!(
+        project_columns(&rust_connection),
+        expected_project,
+        "v9 仅按序追加 2 个项目文档列"
+    );
+
+    // memory_candidate：v7 列集合 + 按序追加的 1 个 v9 结构化载荷列（结论卡片）。
+    let candidate_columns = |connection: &Connection| {
+        connection
+            .prepare("SELECT name FROM pragma_table_info('memory_candidate');")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let mut expected_candidate = candidate_columns(&csharp_connection);
+    expected_candidate.push("structured_payload_json".to_string());
+    assert_eq!(
+        candidate_columns(&rust_connection),
+        expected_candidate,
+        "v9 仅按序追加 1 个结构化载荷列"
+    );
     let _ = std::fs::remove_dir_all(rust_path.parent().unwrap());
 }
 
@@ -173,7 +226,7 @@ fn v7_migration_fixes_unguid_session_ids() {
     }
 
     let connection = memory_storage::open_initialized(&path).unwrap();
-    assert_eq!(user_version(&connection), 8);
+    assert_eq!(user_version(&connection), 10);
     let session_id: String = connection
         .query_row(
             "SELECT id FROM mcp_client_session WHERE client_key='probe-key';",
@@ -239,7 +292,7 @@ fn failed_migration_step_rolls_back_atomically_and_recovers() {
     }
 
     let connection = memory_storage::open_initialized(&path).unwrap();
-    assert_eq!(user_version(&connection), 8, "修复后必须能继续升级到 8");
+    assert_eq!(user_version(&connection), 10, "修复后必须能继续升级到 10");
     assert_eq!(integrity(&connection), "ok");
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
