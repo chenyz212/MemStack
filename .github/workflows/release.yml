@@ -58,7 +58,7 @@ jobs:
         run: .\memory-web\node_modules\.bin\tauri.cmd build
 
       - name: 整理绿色版
-        shell: powershell
+        shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
           .\scripts\package-portable.ps1 -Version $version
