@@ -2424,7 +2424,11 @@ mod tests {
         assert!(!original_path.exists());
 
         let (remembered_path, _) = context.service.get_project_settings(&context.project_id).unwrap();
-        assert_eq!(remembered_path.as_deref(), destination.to_str());
+        let expected_path = destination.canonicalize().unwrap();
+        let expected_display = expected_path
+            .to_str()
+            .map(|text| text.trim_start_matches(r"\\?\").to_string());
+        assert_eq!(remembered_path, expected_display);
     }
 
     #[test]
