@@ -33,6 +33,9 @@ jobs:
         working-directory: memory-web
         run: npm ci
 
+      - name: 构建 MCP 程序
+        run: cargo build --release -p memstack-mcp-stdio
+
       - name: 检查 Rust 格式
         run: cargo fmt --all -- --check
 
@@ -50,9 +53,6 @@ jobs:
       - name: 构建前端
         working-directory: memory-web
         run: npm run build
-
-      - name: 构建 MCP 程序
-        run: cargo build --release -p memstack-mcp-stdio
 
       - name: 构建 Windows 安装包
         run: .\memory-web\node_modules\.bin\tauri.cmd build
