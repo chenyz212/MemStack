@@ -42,7 +42,7 @@ use serde_json::{Value, json};
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const SERVER_NAME: &str = "memstack";
 const SERVER_TITLE: &str = "MemStack";
-const SERVER_VERSION: &str = "0.4.1";
+const SERVER_VERSION: &str = "0.4.2";
 /// stdin 空闲超时默认值（秒）：24 小时，仅退化模式（祖先链不可解析）兜底。
 ///
 /// 历史教训：空闲超时曾被当作主要回收手段（先 5 分钟后 30 分钟），但部分 AI 客户端
