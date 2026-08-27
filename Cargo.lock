@@ -2075,7 +2075,7 @@ dependencies = [
 
 [[package]]
 name = "memory-application"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "chrono",
  "memory-domain",
@@ -2094,7 +2094,7 @@ dependencies = [
 
 [[package]]
 name = "memory-domain"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2107,7 +2107,7 @@ dependencies = [
 
 [[package]]
 name = "memory-mcp"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "memory-application",
  "memory-domain",
@@ -2119,7 +2119,7 @@ dependencies = [
 
 [[package]]
 name = "memory-platform"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2133,7 +2133,7 @@ dependencies = [
 
 [[package]]
 name = "memory-storage"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "chrono",
  "memory-domain",
@@ -2146,7 +2146,7 @@ dependencies = [
 
 [[package]]
 name = "memstack-desktop"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "chrono",
  "memory-application",
@@ -2165,7 +2165,7 @@ dependencies = [
 
 [[package]]
 name = "memstack-mcp-stdio"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "chrono",
  "memory-application",

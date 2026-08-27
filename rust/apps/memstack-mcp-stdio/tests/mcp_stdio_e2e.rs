@@ -89,7 +89,7 @@ fn full_session_keeps_stdout_pure_and_returns_search_results() {
 
     let tools_list: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
     let tools = tools_list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 21, "必须注册 21 个工具（16 既有 + 5 项目文档）");
+    assert_eq!(tools.len(), 22, "必须注册 22 个工具（16 既有 + 6 项目文档）");
     assert!(
         tools.iter().any(|tool| tool["name"] == "memory_search"),
         "必须包含 memory_search"
@@ -132,7 +132,7 @@ fn ping_returns_empty_result_object_and_session_survives() {
     assert_eq!(ping["result"], serde_json::json!({}), "ping 必须回空对象");
     // 会话存活：ping 之后 tools/list 正常。
     let tools_list: serde_json::Value = serde_json::from_str(&lines[2]).unwrap();
-    assert_eq!(tools_list["result"]["tools"].as_array().unwrap().len(), 21);
+    assert_eq!(tools_list["result"]["tools"].as_array().unwrap().len(), 22);
     let _ = std::fs::remove_dir_all(&fixture.work_directory);
 }
 
@@ -310,7 +310,7 @@ fn session_id_mode_loads_identity_from_dpapi_ciphertext() {
         .unwrap()
         .to_string();
     let tools_list: serde_json::Value = serde_json::from_str(&first_line).unwrap();
-    assert_eq!(tools_list["result"]["tools"].as_array().unwrap().len(), 21);
+    assert_eq!(tools_list["result"]["tools"].as_array().unwrap().len(), 22);
     let _ = std::fs::remove_dir_all(&fixture.work_directory);
 }
 
@@ -392,7 +392,7 @@ fn stdout_json_purity_streaming_check() {
     let _ = std::fs::remove_dir_all(&fixture.work_directory);
 }
 
-/// T10 连接测试服务对真实 exe 的端到端握手：报告成功且 21 个工具齐全。
+/// T10 连接测试服务对真实 exe 的端到端握手：报告成功且 22 个工具齐全。
 #[test]
 fn connection_test_service_passes_against_real_exe() {
     let Some(fixture) = setup_fixture() else { return };
@@ -403,7 +403,7 @@ fn connection_test_service_passes_against_real_exe() {
         &[],
     );
     assert!(report.ok, "真实 exe 握手应通过：{}", report.message);
-    assert_eq!(report.tool_count, 21);
+    assert_eq!(report.tool_count, 22);
     assert_eq!(report.message, "MCP 连接测试通过");
     assert!(report.elapsed_ms > 0);
     let _ = std::fs::remove_dir_all(&fixture.work_directory);
@@ -457,5 +457,70 @@ fn tool_call_writes_observation_log_line() {
         error_line.contains("outcome=error"),
         "业务错误调用标记 error：{error_line}"
     );
+    let _ = std::fs::remove_dir_all(&fixture.work_directory);
+}
+
+/// 祖先监控回归（三层防线第②层）：`MEMSTACK_MCP_FAKE_ANCESTOR_PID` 指向牺牲进程，
+/// 存活期间 MCP 正常应答（stdin 保持打开，不触发 EOF）；牺牲进程被杀后，
+/// MCP 在一个轮询周期内自行退出（不残留僵尸），日志记录 ancestor_watch 与 ancestor_exit。
+#[test]
+fn ancestor_death_recycles_mcp_process() {
+    let Some(fixture) = setup_fixture() else { return };
+    // 牺牲进程：长驻 ping（无控制台依赖），杀掉即模拟「客户端进程死亡」。
+    let mut victim = Command::new("ping")
+        .args(["-n", "600", "127.0.0.1"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("启动牺牲进程失败");
+    let log_path = fixture.work_directory.join("ancestor.log");
+    let mut child = Command::new(exe_path())
+        .env("MEMSTACK_DB_PATH", &fixture.database_path)
+        .env("MEMSTACK_TOKEN", &fixture.plain_token)
+        .env("MEMSTACK_MCP_LOG_FILE", &log_path)
+        .env("MEMSTACK_MCP_FAKE_ANCESTOR_PID", victim.id().to_string())
+        .env("MEMSTACK_MCP_ANCESTOR_POLL_MS", "500")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("启动 MemStack-MCP 失败");
+
+    // 存活期间调用正常：发 initialize 并读回响应。
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-06-18","capabilities":{{}},"clientInfo":{{"name":"e2e","version":"0.0.1"}}}}}}"#
+        )
+        .unwrap();
+        stdin.flush().unwrap();
+    }
+    let mut stdout_reader = BufReader::new(child.stdout.take().unwrap());
+    let mut response = String::new();
+    stdout_reader
+        .read_line(&mut response)
+        .expect("读取 initialize 响应失败");
+    assert!(response.contains("\"result\""), "initialize 应成功：{response}");
+
+    // 杀掉牺牲进程 → MCP 应在一个轮询周期（500ms）内退出。
+    victim.kill().expect("终止牺牲进程失败");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let status = loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            break status;
+        }
+        assert!(std::time::Instant::now() < deadline, "MCP 未随祖先进程退出（15s）");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    assert_eq!(status.code(), Some(0), "祖先回收必须以 0 退出");
+    let log_text = std::fs::read_to_string(&log_path).unwrap_or_default();
+    assert!(
+        log_text.contains("ancestor_watch source=fake"),
+        "应记录祖先监控：{log_text}"
+    );
+    assert!(log_text.contains("ancestor_exit"), "应记录祖先退出原因：{log_text}");
+    let _ = victim.wait();
     let _ = std::fs::remove_dir_all(&fixture.work_directory);
 }

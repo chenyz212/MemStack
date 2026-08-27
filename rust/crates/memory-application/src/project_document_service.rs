@@ -849,6 +849,173 @@ impl ProjectDocumentService {
         self.with_workspace_sync_lock(&paths, || self.batch_update_locked(&binding, &paths, updates))
     }
 
+    /// 恢复正式文档唯一保留的上一版本快照。
+    ///
+    /// 恢复操作不接收正文，避免调用方以恢复名义再次覆盖内容；当前版本会作为
+    /// 新的上一版快照保留，因此可在确认后恢复本次误写入的内容。
+    pub fn restore_previous_versions(
+        &self,
+        workspace_path: &str,
+        documents: &[(ProjectDocumentType, i64)],
+    ) -> Result<Vec<ProjectDocumentUpdateResultItem>, BusinessError> {
+        let (binding, paths) = self.resolve_binding(workspace_path)?;
+        self.with_workspace_sync_lock(&paths, || {
+            self.restore_previous_versions_locked(&binding, &paths, documents)
+        })
+    }
+
+    /// 在工作空间同步锁内校验并恢复多份文档的上一版本快照。
+    fn restore_previous_versions_locked(
+        &self,
+        binding: &ProjectBinding,
+        paths: &WorkspacePaths,
+        documents: &[(ProjectDocumentType, i64)],
+    ) -> Result<Vec<ProjectDocumentUpdateResultItem>, BusinessError> {
+        let outcome = self.sync_workspace_unlocked(&binding.id, paths)?;
+        if outcome.status != status::ACTIVE {
+            return Err(BusinessError::with_message(
+                ErrorCode::ProjectDocumentPromotionIncomplete,
+                format!("项目文档尚未进入可用状态（{}），暂不能恢复上一版本", outcome.status),
+            ));
+        }
+        if documents.is_empty() {
+            return Err(BusinessError::with_message(
+                ErrorCode::InvalidArgument,
+                "恢复上一版本至少包含一份文档",
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (kind, _) in documents {
+            if !seen.insert(kind.as_str()) {
+                return Err(BusinessError::with_message(
+                    ErrorCode::ProjectDocumentTypeInvalid,
+                    format!("恢复上一版本包含重复文档类型：{}", kind.as_str()),
+                ));
+            }
+        }
+
+        let mut connection = self.database.open()?;
+        let mut validated = Vec::new();
+        for (kind, expected_version) in documents {
+            let current = self.get_document(&binding.id, *kind)?;
+            if current.version != *expected_version {
+                return Err(version_conflict(
+                    *kind,
+                    &current.content,
+                    current.version,
+                    &current.checksum,
+                ));
+            }
+            let (previous_content, previous_checksum, previous_version): (Option<String>, Option<String>, Option<i64>) =
+                connection
+                    .query_row(
+                        "SELECT previous_content,previous_checksum,previous_version \
+                     FROM project_document WHERE project_id=$pid AND document_type=$type;",
+                        params![binding.id, kind.as_str()],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(map_sqlite_error)?;
+            let (previous_content, previous_checksum, previous_version) =
+                match (previous_content, previous_checksum, previous_version) {
+                    (Some(content), Some(checksum), Some(version)) => (content, checksum, version),
+                    _ => {
+                        return Err(BusinessError::with_message(
+                            ErrorCode::InvalidArgument,
+                            format!("文档「{}」没有可恢复的上一版本快照", kind.display_name()),
+                        ));
+                    }
+                };
+            if previous_version >= current.version {
+                return Err(BusinessError::with_message(
+                    ErrorCode::InvalidArgument,
+                    format!("文档「{}」的上一版本快照版本异常", kind.display_name()),
+                ));
+            }
+            parse_document(*kind, &previous_content)?;
+            if document_checksum(&previous_content) != previous_checksum {
+                return Err(BusinessError::with_message(
+                    ErrorCode::InvalidArgument,
+                    format!("文档「{}」的上一版本快照校验失败", kind.display_name()),
+                ));
+            }
+            validated.push((*kind, current, previous_content, previous_checksum));
+        }
+
+        let journal = BatchUpdateJournal {
+            project_id: binding.id.clone(),
+            entries: validated
+                .iter()
+                .map(
+                    |(kind, current, previous_content, previous_checksum)| BatchUpdateJournalEntry {
+                        document_type: *kind,
+                        previous_content: current.content.clone(),
+                        next_content: previous_content.clone(),
+                        next_checksum: previous_checksum.clone(),
+                        next_version: current.version + 1,
+                    },
+                )
+                .collect(),
+        };
+        self.write_batch_update_journal(paths, &journal)?;
+        for (kind, _, previous_content, _) in &validated {
+            if let Err(write_error) = atomic_write(&paths.document_path(*kind), previous_content) {
+                self.recover_batch_update(&binding.id, paths)?;
+                return Err(write_error);
+            }
+        }
+
+        let now_text = format_storage_time(self.clock.now_utc());
+        let database_result = (|| -> Result<Vec<ProjectDocumentUpdateResultItem>, BusinessError> {
+            let transaction = connection.transaction().map_err(map_sqlite_error)?;
+            let mut results = Vec::new();
+            for (kind, current, previous_content, previous_checksum) in &validated {
+                let changed = transaction
+                    .execute(
+                        "UPDATE project_document \
+                         SET previous_content=$previous_content,previous_checksum=$previous_checksum,previous_version=$previous_version, \
+                             content=$content,checksum=$checksum,version=version+1,sync_status='SYNCED',updated_at=$updated \
+                         WHERE project_id=$pid AND document_type=$type AND version=$expected;",
+                        params![
+                            current.content,
+                            current.checksum,
+                            current.version,
+                            previous_content,
+                            previous_checksum,
+                            now_text,
+                            binding.id,
+                            kind.as_str(),
+                            current.version,
+                        ],
+                    )
+                    .map_err(map_sqlite_error)?;
+                if changed != 1 {
+                    return Err(BusinessError::new(ErrorCode::ProjectDocumentVersionConflict));
+                }
+                results.push(ProjectDocumentUpdateResultItem {
+                    document_type: *kind,
+                    version: current.version + 1,
+                    checksum: previous_checksum.clone(),
+                    updated_at: now_text.clone(),
+                });
+            }
+            transaction.commit().map_err(map_sqlite_error)?;
+            Ok(results)
+        })();
+        let results = match database_result {
+            Ok(results) => results,
+            Err(error) => {
+                self.recover_batch_update(&binding.id, paths)?;
+                return Err(error);
+            }
+        };
+        remove_if_exists(&paths.batch_update_journal_path())?;
+        for (kind, _, previous_content, _) in &validated {
+            self.refresh_document_indexes(&binding.id, *kind, previous_content)?;
+        }
+        self.remember_workspace_path(&binding.id, paths)?;
+        Ok(results)
+    }
+
     /// 在工作空间同步锁内完成批量校验、文件替换、数据库提交与索引刷新。
     fn batch_update_locked(
         &self,
@@ -2088,6 +2255,72 @@ mod tests {
         assert_eq!(results[1].version, 2);
         let on_disk = std::fs::read_to_string(memstack_dir.join("03_CURRENT_STATUS.md")).unwrap();
         assert!(on_disk.contains("AI 更新。"));
+    }
+
+    #[test]
+    fn restore_previous_versions_restores_content_and_preserves_reverse_snapshot() {
+        let context = context();
+        context
+            .service
+            .create_drafts(&workspace_path(&context), &five_documents(), None)
+            .unwrap();
+        approve_all(&context);
+        context.service.promote_drafts(&context.project_id).unwrap();
+
+        let original = context
+            .service
+            .get_document(&context.project_id, ProjectDocumentType::Problems)
+            .unwrap();
+        let incorrect_content = "# 项目问题\n\n## 当前问题\n\n误覆盖内容。";
+        context
+            .service
+            .batch_update(
+                &workspace_path(&context),
+                &[(
+                    ProjectDocumentType::Problems,
+                    original.version,
+                    incorrect_content.to_string(),
+                    "误更新测试".to_string(),
+                )],
+            )
+            .unwrap();
+
+        let restored = context
+            .service
+            .restore_previous_versions(
+                &workspace_path(&context),
+                &[(ProjectDocumentType::Problems, original.version + 1)],
+            )
+            .unwrap();
+        assert_eq!(restored[0].version, original.version + 2);
+        let current = context
+            .service
+            .get_document(&context.project_id, ProjectDocumentType::Problems)
+            .unwrap();
+        assert_eq!(current.content, original.content);
+        assert_eq!(current.previous_version, Some(original.version + 1));
+        let on_disk = std::fs::read_to_string(context.workspace.path().join(".memstack/04_PROBLEMS.md")).unwrap();
+        assert_eq!(on_disk, original.content);
+        let previous_content: String = context
+            .database
+            .open()
+            .unwrap()
+            .query_row(
+                "SELECT previous_content FROM project_document WHERE project_id=$pid AND document_type='PROBLEMS';",
+                params![context.project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(previous_content.contains("误覆盖内容。"));
+
+        let conflict = context
+            .service
+            .restore_previous_versions(
+                &workspace_path(&context),
+                &[(ProjectDocumentType::Problems, original.version + 1)],
+            )
+            .unwrap_err();
+        assert_eq!(conflict.code, ErrorCode::ProjectDocumentVersionConflict);
     }
 
     #[test]

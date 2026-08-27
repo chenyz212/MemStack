@@ -6,6 +6,7 @@ pub mod dpapi;
 pub mod log_rotation;
 pub mod named_mutex;
 pub mod paths;
+pub mod process_tree;
 
 pub use dpapi::{DpapiError, protect, unprotect};
 pub use named_mutex::{NamedMutex, WaitResult};

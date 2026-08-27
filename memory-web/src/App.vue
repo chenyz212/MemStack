@@ -133,6 +133,7 @@ const graphEntryMemoryId = ref<string | null>(null);
 /** 总览图谱预览数据（24 节点真实关系）。 */
 const overviewGraph = ref<GraphResult | null>(null);
 const overviewGraphCanvas = ref<HTMLCanvasElement | null>(null);
+const brandLogoCanvas = ref<HTMLCanvasElement | null>(null);
 /** 窗口隐藏标志：暂停总览轨道环绕动画。 */
 const isWindowHidden = ref(false);
 const activeProjects = computed(() =>
@@ -1850,14 +1851,194 @@ function clearMcpSecrets(): void {
   issuedMcpClientToken.value = null;
 }
 
+/** 品牌 Logo 粒子流动画引擎：5 个白色粒子沿纵向正弦摆动下落，
+ *  带有淡出轨迹，到底部后从顶部重新注入，循环不中断。 */
+interface LogoParticle {
+  x: number;
+  y: number;
+  vy: number;
+  phase: number;
+  amp: number;
+  wobble: number;
+  r: number;
+  life: number;
+  lifeMax: number;
+  trail: { x: number; y: number; r: number }[];
+}
+
+let logoParticleFrameId: number | null = null;
+let logoParticleParticles: LogoParticle[] = [];
+let logoParticleLastTime = 0;
+let logoParticleSpeedMul = 0.1;
+let logoParticleCount = 3;
+let logoParticleRunning = false;
+let logoParticleCtx: CanvasRenderingContext2D | null = null;
+let logoParticleW = 0;
+let logoParticleH = 0;
+
+/** 创建一个新粒子，初始位置在画布顶部随机区域。 */
+function createLogoParticle(index: number): LogoParticle {
+  const baseX = logoParticleW * (0.28 + (index % logoParticleCount) * 0.22);
+  return {
+    x: baseX,
+    y: -Math.random() * logoParticleH * 0.3,
+    vy: 40 + Math.random() * 50,
+    phase: Math.random() * Math.PI * 2,
+    amp: 6 + Math.random() * 14,
+    wobble: 0.5 + Math.random() * 1.2,
+    r: 1.0 + Math.random() * 0.8,
+    life: 0,
+    lifeMax: 3.5 + Math.random() * 2.5,
+    trail: [],
+  };
+}
+
+/** 重建全部粒子（初始化或重置时调用）。 */
+function rebuildLogoParticles(): void {
+  logoParticleParticles = [];
+  for (let i = 0; i < logoParticleCount; i++) {
+    logoParticleParticles.push(createLogoParticle(i));
+  }
+}
+
+/** 动画单步推进：更新粒子位置、速度、生命期。 */
+function stepLogoParticles(dt: number): void {
+  for (let i = 0; i < logoParticleParticles.length; i++) {
+    const p = logoParticleParticles[i];
+    p.phase += dt * p.wobble * 1.4;
+    p.life += dt;
+    p.x += Math.cos(p.phase) * p.amp * dt;
+    p.y += p.vy * logoParticleSpeedMul * dt;
+    p.trail.push({ x: p.x, y: p.y, r: p.r });
+    if (p.trail.length > 6) p.trail.shift();
+    if (p.y > logoParticleH + 8 || p.life > p.lifeMax) {
+      logoParticleParticles[i] = createLogoParticle(i);
+    }
+  }
+}
+
+/** 计算粒子的渐入渐出透明度。 */
+function logoParticleAlpha(p: LogoParticle): number {
+  const fadeIn = Math.min(1, p.life / 0.45);
+  const remain = Math.max(0, p.lifeMax - p.life);
+  const fadeOut = Math.min(1, remain / 0.6);
+  return Math.min(fadeIn, fadeOut);
+}
+
+/** 绘制一帧：清空画布后依次绘制轨迹、光晕、粒子本体。 */
+function renderLogoParticles(): void {
+  const ctx = logoParticleCtx;
+  if (!ctx) return;
+  ctx.clearRect(0, 0, logoParticleW, logoParticleH);
+
+  // 绘制粒子淡出轨迹
+  for (const p of logoParticleParticles) {
+    const alpha = logoParticleAlpha(p);
+    for (let t = 0; t < p.trail.length; t++) {
+      const pt = p.trail[t];
+      const k = (t + 1) / p.trail.length;
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(255,255,255,${(alpha * 0.18 * k).toFixed(3)})`;
+      ctx.arc(pt.x, pt.y, pt.r * (0.6 + 0.4 * k), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // 绘制粒子光晕与本体
+  for (const p of logoParticleParticles) {
+    const a = logoParticleAlpha(p);
+    // 光晕
+    const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r * 3.5);
+    glow.addColorStop(0, `rgba(255,255,255,${(0.5 * a).toFixed(3)})`);
+    glow.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    // 本体
+    ctx.beginPath();
+    ctx.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`;
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/** requestAnimationFrame 主循环。 */
+function logoParticleLoop(now: number): void {
+  const dt = Math.min(0.05, (now - logoParticleLastTime) / 1000);
+  logoParticleLastTime = now;
+  if (logoParticleRunning) stepLogoParticles(dt);
+  renderLogoParticles();
+  logoParticleFrameId = requestAnimationFrame(logoParticleLoop);
+}
+
+/** 启动粒子动画：初始化画布、粒子、开启 rAF 循环。
+ *  若系统开启了「减少动态效果」，则仅渲染一帧静态画面。 */
+function startLogoParticleAnimation(): void {
+  const canvas = brandLogoCanvas.value;
+  if (!canvas) return;
+  const bounds = canvas.getBoundingClientRect();
+  if (bounds.width < 4 || bounds.height < 4) return;
+  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  canvas.width = Math.round(bounds.width * dpr);
+  canvas.height = Math.round(bounds.height * dpr);
+  logoParticleCtx = canvas.getContext('2d');
+  if (!logoParticleCtx) return;
+  logoParticleCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  logoParticleW = bounds.width;
+  logoParticleH = bounds.height;
+  rebuildLogoParticles();
+  // 减少动态效果：静止粒子按分布位置摆放，不开启动画循环
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reducedMotion) {
+    for (let i = 0; i < logoParticleParticles.length; i++) {
+      const p = logoParticleParticles[i];
+      p.y = logoParticleH * (0.2 + i * 0.16);
+      p.x = logoParticleW * (0.28 + (i % 3) * 0.18);
+      p.life = 1;
+    }
+    renderLogoParticles();
+    return;
+  }
+  logoParticleRunning = true;
+  logoParticleLastTime = performance.now();
+  if (logoParticleFrameId === null) {
+    logoParticleFrameId = requestAnimationFrame(logoParticleLoop);
+  }
+}
+
+/** 停止粒子动画：取消 rAF 回调，清理资源。 */
+function stopLogoParticleAnimation(): void {
+  logoParticleRunning = false;
+  if (logoParticleFrameId !== null) {
+    cancelAnimationFrame(logoParticleFrameId);
+    logoParticleFrameId = null;
+  }
+  logoParticleCtx = null;
+  logoParticleParticles = [];
+}
+
+/** 页面可见性变化：隐藏时暂停动画，恢复时继续。 */
+function handleLogoParticleVisibility(): void {
+  if (document.hidden) {
+    logoParticleRunning = false;
+  } else {
+    logoParticleLastTime = performance.now();
+    logoParticleRunning = true;
+  }
+}
+
 onMounted(async () => {
   window.addEventListener("keydown", handleShortcut);
   window.addEventListener("blur", clearMcpSecrets);
   window.addEventListener("visibilitychange", handleVisibilityChange);
   window.addEventListener("resize", renderOverviewGraphPreview);
+  window.addEventListener("resize", startLogoParticleAnimation);
+  document.addEventListener("visibilitychange", handleLogoParticleVisibility);
   await Promise.all([loadOverview(), loadProjects(), loadMemoryFacets()]);
   if (GRAPH_FEATURE_ENABLED) void loadOverviewGraphPreview();
   startAutoRefresh();
+  startLogoParticleAnimation();
 });
 
 onBeforeUnmount(() => {
@@ -1865,7 +2046,10 @@ onBeforeUnmount(() => {
   window.removeEventListener("blur", clearMcpSecrets);
   window.removeEventListener("visibilitychange", handleVisibilityChange);
   window.removeEventListener("resize", renderOverviewGraphPreview);
+  window.removeEventListener("resize", startLogoParticleAnimation);
+  document.removeEventListener("visibilitychange", handleLogoParticleVisibility);
   stopAutoRefresh();
+  stopLogoParticleAnimation();
   searchController?.abort();
   if (searchTimer !== null) window.clearTimeout(searchTimer);
   if (apiKeyClickTimer !== null) window.clearTimeout(apiKeyClickTimer);
@@ -1979,7 +2163,9 @@ async function autoRefresh(): Promise<void> {
   >
     <aside class="sidebar" aria-label="主导航">
       <button class="brand" type="button" @click="selectNavigation('overview')">
-        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="brand-mark" aria-hidden="true">
+          <canvas ref="brandLogoCanvas" class="brand-logo-canvas"></canvas>
+        </span>
         <span
           ><strong>MemStack</strong><small>PERSONAL MEMORY HUB</small></span
         >
@@ -3013,11 +3199,26 @@ async function autoRefresh(): Promise<void> {
           >
         </div>
         <h2>{{ selectedMemory.title }}</h2>
-        <p v-if="selectedMemory.summary" class="memory-summary">
-          {{ selectedMemory.summary }}
-        </p>
         <div v-if="selectedMemory.tags.length" class="drawer-tags drawer-tags-top">
-          <span v-for="tag in selectedMemory.tags" :key="tag"># {{ tag }}</span>
+          <span v-for="tag in selectedMemory.tags.slice(0, 4)" :key="tag"
+            ># {{ tag }}</span
+          ><div
+            v-if="selectedMemory.tags.length > 4"
+            class="drawer-tag-overflow"
+          >
+            <button
+              class="drawer-tag-overflow-trigger"
+              type="button"
+              :aria-label="`其余标签：${selectedMemory.tags.slice(4).join('、')}`"
+              >+{{ selectedMemory.tags.length - 4 }}</button
+            >
+            <span class="drawer-tag-popover" role="tooltip">
+              <span v-for="tag in selectedMemory.tags.slice(4)" :key="tag"
+                ># {{ tag }}</span
+              >
+            </span>
+          </div
+          >
         </div>
         <div class="drawer-meta-row">
           <div class="drawer-metadata">
