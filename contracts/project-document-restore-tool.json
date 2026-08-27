@@ -1,0 +1,60 @@
+{
+  "name": "project_document_restore_previous",
+  "description": "恢复正式项目文档唯一保留的上一版本快照。恢复不接收正文，必须显式提供当前版本号；当前内容会保留为新的上一版快照，以便必要时反向恢复。",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "workspacePath": {
+        "type": "string",
+        "description": "本地工作空间绝对路径"
+      },
+      "documents": {
+        "type": "array",
+        "minItems": 1,
+        "description": "待恢复文档（documentType + expectedVersion）",
+        "items": {
+          "type": "object",
+          "properties": {
+            "documentType": {
+              "type": "string",
+              "enum": ["CONTEXT", "DECISIONS", "CURRENT_STATUS", "PROBLEMS", "CHANGELOG"]
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "description": "当前版本号（乐观锁）"
+            }
+          },
+          "required": ["documentType", "expectedVersion"]
+        }
+      }
+    },
+    "required": ["workspacePath", "documents"]
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "result": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "documentType": {
+              "type": "string",
+              "enum": ["CONTEXT", "DECISIONS", "CURRENT_STATUS", "PROBLEMS", "CHANGELOG"]
+            },
+            "version": {"type": "integer"},
+            "checksum": {"type": "string"},
+            "updatedAt": {"type": "string", "format": "date-time"}
+          },
+          "required": ["documentType", "version", "checksum", "updatedAt"]
+        }
+      }
+    },
+    "required": ["result"]
+  },
+  "annotations": {
+    "destructiveHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": false
+  }
+}

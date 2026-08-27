@@ -1,4 +1,4 @@
-//! 工具清单注册表：内嵌 `contracts/mcp-tools-list.json` 快照作为唯一权威。
+//! 工具清单注册表：内嵌常规工具快照，并追加受控恢复工具契约。
 //!
 //! 快照是 C# MCP SDK `tools/list` 的原始响应帧（含 `result.tools`）；
 //! 这里抽出 `tools` 数组做 Value 级服务（JSON 对象键序无关，决策 6）。
@@ -8,11 +8,21 @@ use serde_json::{Value, json};
 /// C# 0.4.0 实测捕获的 tools/list 契约快照（字节级权威）。
 const TOOLS_LIST_SNAPSHOT: &str = include_str!("../../../../contracts/mcp-tools-list.json");
 
+/// 正式项目文档的受控恢复工具契约。
+const PROJECT_DOCUMENT_RESTORE_TOOL: &str = include_str!("../../../../contracts/project-document-restore-tool.json");
+
 /// 返回 `{"tools":[...]}`（与 C# tools/list 的 result 形状一致）。
 pub fn tools_list_json() -> Value {
     let snapshot: Value =
         serde_json::from_str(TOOLS_LIST_SNAPSHOT).expect("contracts/mcp-tools-list.json 必须是合法 JSON");
-    json!({ "tools": snapshot["result"]["tools"].clone() })
+    let restore_tool: Value = serde_json::from_str(PROJECT_DOCUMENT_RESTORE_TOOL)
+        .expect("contracts/project-document-restore-tool.json 必须是合法 JSON");
+    let mut tools = snapshot["result"]["tools"]
+        .as_array()
+        .expect("快照 tools 必须是数组")
+        .clone();
+    tools.push(restore_tool);
+    json!({ "tools": tools })
 }
 
 /// 全部工具名（快照顺序）。
@@ -34,8 +44,8 @@ pub fn is_known_tool(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// 21 个单一职责工具（16 个既有工具 + 5 个项目文档/结论卡片工具）。
-    const EXPECTED: [&str; 21] = [
+    /// 22 个单一职责工具（16 个既有工具 + 6 个项目文档/结论卡片工具）。
+    const EXPECTED: [&str; 22] = [
         "memory_search",
         "memory_get",
         "memory_recent",
@@ -56,14 +66,15 @@ mod tests {
         "project_document_draft_create",
         "project_document_draft_update",
         "project_document_batch_update",
+        "project_document_restore_previous",
         "conclusion_card_candidate_submit",
     ];
 
     #[test]
-    fn snapshot_contains_exactly_twenty_one_tools() {
+    fn tools_list_contains_exactly_twenty_two_tools() {
         let snapshot = tools_list_json();
         let tools = snapshot["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 21, "工具数量必须是 21：{tools:?}");
+        assert_eq!(tools.len(), 22, "工具数量必须是 22：{tools:?}");
         let mut names: Vec<&str> = tools.iter().map(|tool| tool["name"].as_str().unwrap()).collect();
         names.sort_unstable();
         let mut expected = EXPECTED;

@@ -124,6 +124,7 @@ pub fn dispatch(
         "project_document_draft_create" => project_document_draft_create(&parse(arguments)?, caller, services),
         "project_document_draft_update" => project_document_draft_update(&parse(arguments)?, caller, services),
         "project_document_batch_update" => project_document_batch_update(&parse(arguments)?, caller, services),
+        "project_document_restore_previous" => project_document_restore_previous(&parse(arguments)?, caller, services),
         "conclusion_card_candidate_submit" => conclusion_card_candidate_submit(&parse(arguments)?, caller, services),
         _ => unreachable!("registry 已校验，快照与 match 分支必须同步维护"),
     }
@@ -830,6 +831,40 @@ fn project_document_batch_update(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct RestorePreviousArgs {
+    workspace_path: String,
+    documents: Vec<RestorePreviousItemArgs>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestorePreviousItemArgs {
+    document_type: memory_domain::ProjectDocumentType,
+    expected_version: i64,
+}
+
+/// 恢复指定正式文档唯一保留的上一版本快照。
+fn project_document_restore_previous(
+    args: &RestorePreviousArgs,
+    caller: &McpCallerContext,
+    services: &Services,
+) -> Result<Value, BusinessError> {
+    require_write(caller)?;
+    require_document_scope(caller, services, &args.workspace_path)?;
+    let documents: Vec<(memory_domain::ProjectDocumentType, i64)> = args
+        .documents
+        .iter()
+        .map(|item| (item.document_type, item.expected_version))
+        .collect();
+    let results = services
+        .documents
+        .restore_previous_versions(&args.workspace_path, &documents)?;
+    record_activity(services, caller, "UPDATE", Some("Project"));
+    to_value(&serde_json::json!({ "result": results }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ConclusionSubmitArgs {
     workspace_path: String,
     card: memory_domain::ConclusionCardPayload,
@@ -1383,6 +1418,11 @@ mod tests {
         assert_eq!(handoff["status"], json!("ACTIVE"));
         assert!(handoff["contextText"].as_str().unwrap().contains("背景"));
         assert_eq!(handoff["documents"].as_array().unwrap().len(), 5);
+        let original_problem = context
+            .services
+            .documents
+            .get_document(&project_id, memory_domain::ProjectDocumentType::Problems)
+            .unwrap();
 
         // 批量更新（三份文档一起提交；使用当前版本）。
         let updates = json!([
@@ -1411,6 +1451,24 @@ mod tests {
             )
             .unwrap();
         assert_eq!(activity, ("UPDATE".to_string(), "Project".to_string()));
+
+        let restored = dispatch(
+            "project_document_restore_previous",
+            &json!({
+                "workspacePath": workspace_path,
+                "documents": [{"documentType":"PROBLEMS","expectedVersion":2}]
+            }),
+            &context.owner,
+            &context.services,
+        )
+        .unwrap();
+        assert_eq!(restored["result"][0]["version"], json!(3));
+        let restored_problem = context
+            .services
+            .documents
+            .get_document(&project_id, memory_domain::ProjectDocumentType::Problems)
+            .unwrap();
+        assert_eq!(restored_problem.content, original_problem.content);
 
         // 一个版本冲突 → 整批拒绝。
         let mixed = json!([

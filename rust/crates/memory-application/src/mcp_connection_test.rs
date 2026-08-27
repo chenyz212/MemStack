@@ -3,7 +3,7 @@
 //! 与 C# 差异（架构决策 13）：不走固定 10212 HTTP 端口，而是 spawn 本机 MCP exe
 //! 执行真实 stdio 握手（initialize + tools/list）：
 //! - 校验 initialize 响应的协议版本与服务器信息；
-//! - 校验 tools/list 恰好包含固定 21 个工具（16 个既有 + 5 个项目文档/结论卡片）；
+//! - 校验 tools/list 恰好包含固定 22 个工具（16 个既有 + 6 个项目文档/结论卡片）；
 //! - 报告成功/失败与总耗时；任一环节失败或超过超时（默认 10s）即终止子进程。
 
 use std::io::{BufRead, BufReader, Write};
@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 /// 期望的协议协商版本（与 stdio 服务 initialize 响应一致）。
 pub const EXPECTED_PROTOCOL_VERSION: &str = "2025-06-18";
 
-/// 固定的 21 个工具名（16 个既有工具 + 5 个项目文档/结论卡片工具）。
-pub const EXPECTED_TOOL_NAMES: [&str; 21] = [
+/// 固定的 22 个工具名（16 个既有工具 + 6 个项目文档/结论卡片工具）。
+pub const EXPECTED_TOOL_NAMES: [&str; 22] = [
     "memory_search",
     "memory_get",
     "memory_recent",
@@ -37,6 +37,7 @@ pub const EXPECTED_TOOL_NAMES: [&str; 21] = [
     "project_document_draft_create",
     "project_document_draft_update",
     "project_document_batch_update",
+    "project_document_restore_previous",
     "conclusion_card_candidate_submit",
 ];
 
@@ -192,7 +193,7 @@ fn verify_initialize(response: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
-/// 校验 tools/list 响应：恰好 21 个工具且名称集合与固定清单一致。
+/// 校验 tools/list 响应：恰好 22 个工具且名称集合与固定清单一致。
 fn verify_tools(response: &serde_json::Value) -> Result<usize, String> {
     let result = response
         .get("result")
@@ -210,7 +211,7 @@ fn verify_tools(response: &serde_json::Value) -> Result<usize, String> {
     let mut expected: Vec<&str> = EXPECTED_TOOL_NAMES.to_vec();
     expected.sort();
     if actual != expected {
-        return Err("MCP 工具清单与固定的 21 个工具不一致".to_string());
+        return Err("MCP 工具清单与固定的 22 个工具不一致".to_string());
     }
     Ok(tools.len())
 }
@@ -255,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn success_path_reports_ok_with_twenty_one_tools() {
+    fn success_path_reports_ok_with_twenty_two_tools() {
         let database = repository_root().join("testdata/db-samples/full-sample.db");
         if !database.exists() {
             eprintln!("跳过：缺少 full-sample.db");
@@ -271,7 +272,7 @@ mod tests {
             Duration::from_secs(15),
         );
         assert!(report.ok, "成功路径应通过：{}", report.message);
-        assert_eq!(report.tool_count, 21);
+        assert_eq!(report.tool_count, 22);
         assert_eq!(report.message, "MCP 连接测试通过");
     }
 
@@ -322,6 +323,6 @@ mod tests {
             Duration::from_secs(15),
         );
         assert!(!report.ok);
-        assert_eq!(report.message, "MCP 工具清单与固定的 21 个工具不一致");
+        assert_eq!(report.message, "MCP 工具清单与固定的 22 个工具不一致");
     }
 }

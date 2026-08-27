@@ -497,7 +497,7 @@ mod tests {
         // SAFETY：同上。
         unsafe { std::env::remove_var("MEMSTACK_MCP_EXE") };
         assert!(result.success, "假 exe 握手应通过：{}", result.message);
-        assert_eq!(result.tool_count, 21);
+        assert_eq!(result.tool_count, 22);
         assert_eq!(result.message, "MCP 连接测试通过");
         // 假 exe 不访问数据库：连接活动不回填（真实回填由 stdio 服务认证时写入，
         // 见 mcp_stdio_e2e / mcp_connection_test 测试）。
